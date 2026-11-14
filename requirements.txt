@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+astropy
+numpy
+matplotlib
+pyvo
+fsspec
+requests

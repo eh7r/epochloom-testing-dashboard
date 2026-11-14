@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+cache/
+cutouts/
+*.fits
+*.part
+# local experiments / backups
+test*.png
+test_api.py
+fetch.py
+server_step3_backup.py
+spherex/
+# personal session notes (not for the team repo)
+HANDOFF.md

@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SPHEREx Explorer</title>
+<style>
+:root{
+  --bg:#080b12; --panel:#0f1420; --panel2:#141b2b; --line:#222c44; --line2:#2b3756;
+  --text:#e7ecf7; --mut:#8c98b3; --acc:#6ee7ff; --acc2:#3aa8c8;
+  --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+  --b1:#8ab4ff; --b2:#5eead4; --b3:#a3e635; --b4:#fbbf24; --b5:#fb923c; --b6:#f87171;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}  /* .viewer .empty has display:grid, which used to beat the hidden attribute */
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{background:radial-gradient(1200px 500px at 70% -10%,#13203a 0,transparent 60%),var(--bg);min-height:100vh}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#080b12ee;backdrop-filter:blur(6px);z-index:5}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.2px}
+.brand small{color:var(--mut);font-weight:450}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--acc);box-shadow:0 0 14px var(--acc)}
+.pill{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line2);color:var(--mut)}
+.pill.on{color:var(--ok);border-color:#1f5a3a}
+.pill.off{color:var(--bad);border-color:#6b2b2b}
+main{display:grid;grid-template-columns:310px minmax(0,1fr);gap:18px;padding:18px 22px;max-width:1500px;margin:0 auto}
+@media(max-width:980px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.panel h2{margin:0 0 10px;font-size:12px;letter-spacing:.9px;text-transform:uppercase;color:var(--mut);font-weight:600}
+aside .panel + .panel{margin-top:14px}
+label{display:block;font-size:12px;color:var(--mut);margin:10px 0 4px}
+input,select,button{font:inherit;color:var(--text)}
+input[type=number],select{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;outline:none}
+input[type=number]:focus,select:focus{border-color:var(--acc2)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+button{cursor:pointer;border:1px solid var(--line2);background:var(--panel2);border-radius:8px;padding:7px 12px}
+button:hover{border-color:var(--acc2)}
+button.primary{background:linear-gradient(180deg,#1d6f87,#165a70);border-color:#2a8ca9;font-weight:600;width:100%;margin-top:14px;padding:9px}
+button:disabled{opacity:.45;cursor:default}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line2);font-size:12px;cursor:pointer;user-select:none;background:var(--panel2)}
+.chip i{width:8px;height:8px;border-radius:50%;display:inline-block}
+.chip.off{opacity:.4}
+.chip.none{opacity:.25;pointer-events:none}
+.hint{color:var(--mut);font-size:12px;margin-top:10px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
+@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px}
+.stat b{display:block;font-size:20px;font-family:var(--mono);font-weight:600}
+.stat span{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px}
+.duo{display:grid;grid-template-columns:minmax(300px,420px) minmax(0,1fr);gap:14px;margin-bottom:14px}
+@media(max-width:1150px){.duo{grid-template-columns:1fr}}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.bar .grow{flex:1}
+.viewer{position:relative;aspect-ratio:1;background:#000;border:1px solid var(--line2);border-radius:10px;overflow:hidden}
+.viewer img{width:100%;height:100%;display:block;image-rendering:auto}
+.viewer svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.viewer .empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--mut);text-align:center;padding:20px}
+.viewer .tag{position:absolute;left:10px;top:8px;font:12px var(--mono);background:#000a;padding:3px 7px;border-radius:6px}
+input[type=range]{width:100%;accent-color:var(--acc2)}
+.info{font:12px var(--mono);color:var(--mut);margin-top:8px;min-height:18px}
+.plotwrap{position:relative}
+#plot{width:100%;height:340px;display:block;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
+.tip{position:absolute;pointer-events:none;background:#05080f;border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:12px var(--mono);white-space:nowrap;display:none;z-index:3}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:10px}
+.card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2);cursor:pointer}
+.card.sel{border-color:var(--acc)}
+.thumb{position:relative;aspect-ratio:1;background:#000;display:grid;place-items:center}
+.thumb img{width:100%;height:100%;image-rendering:auto;display:block}
+.thumb .st{position:absolute;font-size:11px;color:var(--mut);text-align:center;padding:4px}
+.thumb.loading::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,#ffffff14 50%,transparent 70%);background-size:200% 100%;animation:sh 1.2s infinite}
+@keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}
+.cmeta{padding:6px 8px;font-size:11px;font-family:var(--mono);display:flex;justify-content:space-between;gap:6px}
+.badge{padding:0 6px;border-radius:5px;color:#05080f;font-weight:700}
+.err{color:var(--bad)}
+.toast{position:fixed;right:18px;bottom:18px;background:#2a1212;border:1px solid #6b2b2b;color:#ffd3d3;padding:10px 14px;border-radius:10px;max-width:420px;display:none;z-index:9}
+details{margin-top:10px}
+summary{cursor:pointer;color:var(--mut);font-size:12px}
+table{border-collapse:collapse;width:100%;font:12px var(--mono);margin-top:8px}
+th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}
+th{color:var(--mut);font-weight:500}
+th:first-child,td:first-child{text-align:left}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--mut);margin-top:8px}
+.legend span i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+#aladin{height:440px;border-radius:10px;overflow:hidden;border:1px solid var(--line2);background:#000}
+.maphead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>SPHEREx Explorer <small>live from the IRSA archive</small></div>
+  <div id="srv" class="pill">checking server…</div>
+</header>
+
+<main>
+<aside>
+  <div class="panel">
+    <h2>Target</h2>
+    <label for="preset">Preset</label>
+    <select id="preset">
+      <option value="304.69253,42.45383">Test star (verified, smooth spectrum)</option>
+      <option value="304.693508808,42.4436872991">Notebook field (IRSA tutorial)</option>
+      <option value="217.36943,-62.67393">Proxima Cen, 2026 position (computed)</option>
+      <option value="">Custom…</option>
+    </select>
+    <div class="row2">
+      <div><label for="ra">RA (deg)</label><input id="ra" type="number" step="any" value="304.69253"></div>
+      <div><label for="dec">Dec (deg)</label><input id="dec" type="number" step="any" value="42.45383"></div>
+    </div>
+    <div class="row2">
+      <div><label for="size">Cutout size</label>
+        <select id="size"><option value="0.05">0.05° (~29 px)</option><option value="0.1" selected>0.1° (~58 px)</option><option value="0.2">0.2° (~117 px)</option></select></div>
+      <div><label for="limit">Max images</label><input id="limit" type="number" min="1" max="200" value="24"></div>
+    </div>
+    <button id="go" class="primary">Search archive</button>
+    <button id="mapgo" style="margin-top:8px;width:100%">Show on sky map only</button>
+    <button id="retry" style="margin-top:8px;width:100%">Retry failed frames</button>
+    <div class="hint">Proxima moves ~3.8″ per year, so use the 2026 position, not the catalog (J2000) one.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Bands</h2>
+    <div id="chips" class="chips"></div>
+    <div class="hint">Toggle bands. Applies to the blink viewer and the spectrum.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Aperture photometry</h2>
+    <div class="row3">
+      <div><label for="rap">Source r</label><input id="rap" type="number" step="0.5" min="1" value="2"></div>
+      <div><label for="rin">Sky in</label><input id="rin" type="number" step="0.5" min="2" value="3.5"></div>
+      <div><label for="rout">Sky out</label><input id="rout" type="number" step="0.5" min="3" value="6"></div>
+    </div>
+    <div class="hint">Radii in detector pixels (1 px ≈ 6.15″). Background is the median of the sky ring. Errors are statistical only.</div>
+  </div>
+</aside>
+
+<section>
+  <div class="panel" style="margin-bottom:18px">
+    <div class="maphead">
+      <h2 style="margin:0">Sky map · Aladin Lite</h2>
+      <select id="survey" style="width:auto">
+        <!-- HiPS mirrors on IRSA (CDS is unreachable from some networks; IRSA is already required) -->
+        <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color">DSS2 color</option>
+        <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/red">DSS2 red</option>
+        <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color">2MASS color</option>
+        <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1">AllWISE color</option>
+        <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/color">SDSS DR9 color</option>
+      </select>
+      <span id="mapmsg" class="hint" style="margin:0">pink cross = target · cyan box = SPHEREx cutout</span>
+    </div>
+    <div id="aladin"></div>
+  </div>
+  <div class="stats">
+    <div class="stat"><span>Images</span><b id="s-n">–</b></div>
+    <div class="stat"><span>Bands</span><b id="s-b">–</b></div>
+    <div class="stat"><span>Observed</span><b id="s-t" style="font-size:14px;line-height:28px">–</b></div>
+    <div class="stat"><span>Cutouts loaded</span><b id="s-l">–</b></div>
+  </div>
+
+  <div class="duo">
+    <div class="panel">
+      <h2>Blink · same band over time</h2>
+      <div class="bar">
+        <select id="bband" style="width:auto"></select>
+        <button id="play">▶ Play</button>
+        <label style="margin:0;display:flex;align-items:center;gap:6px">fps <input id="fps" type="range" min="1" max="8" value="2" style="width:70px"></label>
+        <label style="margin:0;display:flex;align-items:center;gap:5px"><input id="ovl" type="checkbox" checked> apertures</label>
+      </div>
+      <div class="viewer">
+        <img id="bv" alt="" hidden>
+        <svg id="ov" viewBox="0 0 100 100" preserveAspectRatio="none" hidden></svg>
+        <div id="bempty" class="empty">Search the archive, then frames appear here.</div>
+        <div id="btag" class="tag" hidden></div>
+      </div>
+      <input id="bslide" type="range" min="0" max="0" value="0" style="margin-top:10px">
+      <div id="binfo" class="info"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Spectrum · our own photometry</h2>
+      <div class="bar">
+        <button id="spec">Extract spectrum</button>
+        <button id="stop" disabled>Stop</button>
+        <label style="margin:0;display:flex;align-items:center;gap:5px"><input id="logy" type="checkbox"> log y</label>
+        <span class="grow"></span>
+        <button id="csv" disabled>CSV</button>
+      </div>
+      <div class="plotwrap"><canvas id="plot"></canvas><div id="tip" class="tip"></div></div>
+      <div id="sinfo" class="info"></div>
+      <div class="legend" id="legend"></div>
+      <details><summary>Measured points</summary><div style="overflow:auto;max-height:240px"><table id="tbl"></table></div></details>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Observations (oldest first)</h2>
+    <div id="grid" class="grid"></div>
+  </div>
+</section>
+</main>
+<div id="toast" class="toast"></div>
+
+<!-- Aladin Lite 3.8.2 (npm build) is an ES module: import it, expose A, then start the map. -->
+<script type="module">
+try { window.A = (await import("./vendor/aladin.js")).default; }
+catch (e) { console.error("Aladin Lite failed to load:", e); }
+mapInit();
+</script>
+<script>
+"use strict";
+// Where the backend lives. Default: the same server that served this page.
+// To use another backend (e.g. a teammate's laptop), open the page with ?api=http://HOST:8000
+const API = (() => {
+  const q = new URLSearchParams(location.search).get("api");
+  if(q){ try{ const u = new URL(q); if(u.protocol === "http:" || u.protocol === "https:") return u.origin; }catch(e){} }
+  return location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8000";
+})();
+const $ = (s) => document.querySelector(s);
+const COL = {1:"#8ab4ff",2:"#5eead4",3:"#a3e635",4:"#fbbf24",5:"#fb923c",6:"#f87171"};
+const BANDS = {1:[0.75,1.11],2:[1.11,1.64],3:[1.64,2.42],4:[2.42,3.82],5:[3.82,4.42],6:[4.42,5.0]};
+const state = {obs:[], target:null, bands:new Set([1,2,3,4,5,6]), run:0, idx:0, timer:null,
+               specStop:false, specBusy:false, sel:-1, pts:[]};
+
+/* ---------- helpers ---------- */
+const bandNum = (bp) => { const m = /D(\d)/.exec(bp||""); return m ? +m[1] : 0; };
+const mjdDate = (m) => new Date((m - 40587) * 864e5);
+const fmtDate = (d) => d.toISOString().slice(0,16).replace("T"," ");
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let toastT;
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.style.display="block"; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display="none",6000); }
+async function getJSON(url){
+  const r = await fetch(url);
+  if(!r.ok){ let d=""; try{ d=(await r.json()).detail }catch(e){} throw new Error(d || ("HTTP "+r.status)); }
+  return r.json();
+}
+async function pool(items, n, fn, alive){
+  let k = 0;
+  const work = async () => { while(k < items.length && alive()){ const it = items[k++]; await fn(it); } };
+  await Promise.all(Array.from({length:Math.min(n, items.length)}, work));
+}
+const tparams = () => `ra=${state.target.ra}&dec=${state.target.dec}&size=${state.target.size}`;
+
+/* ---------- server status ---------- */
+fetch(API + "/openapi.json").then(r => { if(!r.ok) throw 0; $("#srv").textContent="server online"; $("#srv").className="pill on"; })
+  .catch(() => { $("#srv").textContent="server offline"; $("#srv").className="pill off"; });
+
+/* ---------- target form ---------- */
+$("#preset").onchange = (e) => {
+  if(!e.target.value) return;
+  const [ra,dec] = e.target.value.split(","); $("#ra").value = ra; $("#dec").value = dec;
+};
+["ra","dec"].forEach(id => $("#"+id).addEventListener("input", () => $("#preset").value = ""));
+$("#go").onclick = search;
+$("#mapgo").onclick = () => mapShow(+$("#ra").value, +$("#dec").value, +$("#size").value);
+
+/* ---------- sky map (Aladin Lite, CDS) ---------- */
+let aladin = null, aOvl = null, aCat = null;
+function mapInit(){
+  if(typeof A === "undefined"){ $("#mapmsg").textContent = "Aladin Lite failed to load (check web/vendor/aladin.js)."; return; }
+  A.init.then(() => {
+    aladin = A.aladin("#aladin", {survey:$("#survey").value, fov:0.3, target:`${$("#ra").value} ${$("#dec").value}`,
+                                  cooFrame:"ICRS", showFullscreenControl:true, showCooGridControl:true});
+    aOvl = A.graphicOverlay({color:"#6ee7ff", lineWidth:2}); aladin.addOverlay(aOvl);
+    aCat = A.catalog({name:"target", sourceSize:20, color:"#ff4fd8", shape:"cross"}); aladin.addCatalog(aCat);
+    mapShow(+$("#ra").value, +$("#dec").value, +$("#size").value);
+  });
+}
+function mapShow(ra, dec, size){
+  if(!aladin) return;
+  if(!(ra>=0 && ra<=360 && dec>=-90 && dec<=90)) return toast("RA must be 0–360 and Dec −90…90.");
+  aladin.gotoRaDec(ra, dec); aladin.setFoV(Math.max(0.1, size * 3));
+  aCat.removeAll(); aCat.addSources([A.source(ra, dec)]);
+  aOvl.removeAll();
+  const h = size / 2, dr = h / Math.max(0.05, Math.cos(dec * Math.PI / 180));
+  aOvl.add(A.polygon([[ra-dr,dec-h],[ra+dr,dec-h],[ra+dr,dec+h],[ra-dr,dec+h]]));
+}
+$("#survey").onchange = (e) => aladin && aladin.setImageSurvey(e.target.value);
+// mapInit() is called by the module script that loads Aladin Lite.
+
+async function search(){
+  const ra = +$("#ra").value, dec = +$("#dec").value, size = +$("#size").value, limit = +$("#limit").value;
+  if(!(ra>=0 && ra<=360 && dec>=-90 && dec<=90)) return toast("RA must be 0–360 and Dec −90…90.");
+  mapShow(ra, dec, size);
+  stopAll();
+  const run = ++state.run;
+  state.obs.forEach(o => o.blob && URL.revokeObjectURL(o.blob));
+  state.obs = []; state.pts = []; state.sel = -1;
+  $("#go").disabled = true; $("#go").textContent = "Querying IRSA…";
+  let data;
+  try{ data = await getJSON(`${API}/observations?ra=${ra}&dec=${dec}&limit=${limit}`); }
+  catch(e){ toast("Archive query failed: " + e.message); $("#go").disabled=false; $("#go").textContent="Search archive"; return; }
+  $("#go").disabled = false; $("#go").textContent = "Search archive";
+  if(run !== state.run) return;
+  state.target = {ra, dec, size};
+  state.obs = data.map((o,i) => ({...o, i, band:bandNum(o.bandpass), date:mjdDate(o.time), status:"idle", blob:null, phot:null, perr:null}));
+  if(!state.obs.length) toast("No SPHEREx images cover this position.");
+  buildChips(); buildGrid(); refreshStats(); refreshBlink(true); draw();
+  loadAll(run);
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// Load every frame; IRSA drops requests now and then, so failed ones get 2 more passes.
+async function loadAll(run){
+  for(let pass = 0; pass < 3 && run === state.run; pass++){
+    const todo = state.obs.filter(o => o.status !== "ok");
+    if(!todo.length) return;
+    if(pass){ await sleep(4000 * pass); if(run !== state.run) return; }
+    await pool(todo, 3, o => loadFrame(o, run), () => run === state.run);
+  }
+}
+$("#retry").onclick = () => { if(!state.obs.some(o => o.status === "error")) return toast("No failed frames."); loadAll(state.run); };
+
+async function loadFrame(o, run){
+  o.status = "loading"; paintCard(o);
+  try{
+    const r = await fetch(`${API}/cutout?url=${encodeURIComponent(o.url)}&${tparams()}`);
+    if(!r.ok){ let d=""; try{ d=(await r.json()).detail }catch(e){} throw new Error(d || ("HTTP "+r.status)); }
+    const b = await r.blob();
+    if(run !== state.run) return;
+    const hx = (k) => parseFloat(r.headers.get(k));
+    o.pos = isFinite(hx("X-Tx")) ? {x:hx("X-Tx"), y:hx("X-Ty"), nx:hx("X-Nx"), ny:hx("X-Ny")} : null;
+    o.blob = URL.createObjectURL(b); o.status = "ok"; o.err = null;
+  }catch(e){ if(run !== state.run) return; o.status = "error"; o.err = String(e.message || e); }
+  paintCard(o); refreshBlink(); refreshStats();
+}
+
+/* ---------- band chips ---------- */
+function buildChips(){
+  const box = $("#chips"); box.innerHTML = "";
+  for(let b=1;b<=6;b++){
+    const n = state.obs.filter(o => o.band===b).length;
+    const c = document.createElement("span");
+    c.className = "chip" + (n ? "" : " none") + (state.bands.has(b) ? "" : " off");
+    c.innerHTML = `<i style="background:${COL[b]}"></i>D${b} <small style="color:var(--mut)">${n}</small>`;
+    c.onclick = () => { state.bands.has(b) ? state.bands.delete(b) : state.bands.add(b); c.classList.toggle("off"); refreshBlink(); draw(); };
+    box.appendChild(c);
+  }
+}
+
+/* ---------- observation grid ---------- */
+function buildGrid(){
+  const g = $("#grid"); g.innerHTML = "";
+  state.obs.forEach(o => {
+    const c = document.createElement("div"); c.className = "card"; c.id = "c"+o.i;
+    c.innerHTML = `<div class="thumb"><div class="st"></div></div>
+      <div class="cmeta"><span class="badge" style="background:${COL[o.band]||"#888"}">D${o.band}</span><span>${fmtDate(o.date).slice(5)}</span></div>`;
+    c.onclick = () => { if(o.status==="error") return loadFrame(o, state.run); selectObs(o); };
+    g.appendChild(c); paintCard(o);
+  });
+}
+function paintCard(o){
+  const c = $("#c"+o.i); if(!c) return;
+  const th = c.querySelector(".thumb");
+  th.className = "thumb" + (o.status==="loading" ? " loading" : "");
+  if(o.status==="ok"){ th.innerHTML = `<img alt="" src="${o.blob}">`; }
+  else if(o.status==="error"){ th.innerHTML = `<div class="st err">${esc(o.err||"failed")}<br>click to retry</div>`; }
+  else { th.innerHTML = `<div class="st">${o.status==="loading" ? "loading…" : "queued"}</div>`; }
+  c.classList.toggle("sel", state.sel === o.i);
+  c.title = `${o.bandpass} · MJD ${o.time.toFixed(4)}` + (o.phot ? ` · ${o.phot.wavelength?.toFixed(3)} µm` : "");
+}
+function selectObs(o){
+  if(o.status !== "ok") return;
+  state.sel = o.i;
+  if(o.band && $("#bband").value !== String(o.band)){ $("#bband").value = String(o.band); state.idx = 0; }
+  const fr = frames(); const k = fr.findIndex(f => f.i === o.i);
+  if(k >= 0) state.idx = k;
+  state.obs.forEach(paintCard); showFrame();
+}
+
+/* ---------- stats ---------- */
+function refreshStats(){
+  const o = state.obs;
+  $("#s-n").textContent = o.length || "–";
+  const bs = [...new Set(o.map(x => x.band))].sort();
+  $("#s-b").textContent = bs.length ? bs.map(b => "D"+b).join(" ") : "–";
+  $("#s-b").style.fontSize = bs.length > 3 ? "14px" : "20px";
+  if(o.length){ const t = o.map(x => x.time); const lo = Math.min(...t), hi = Math.max(...t);
+    $("#s-t").textContent = `${fmtDate(mjdDate(lo)).slice(0,10)} → ${fmtDate(mjdDate(hi)).slice(0,10)}`; } else $("#s-t").textContent = "–";
+  const ok = o.filter(x => x.status==="ok").length, er = o.filter(x => x.status==="error").length;
+  $("#s-l").textContent = o.length ? `${ok}/${o.length}` + (er ? ` · ${er} failed` : "") : "–";
+  $("#s-l").style.fontSize = er ? "14px" : "20px";
+}
+
+/* ---------- blink viewer ---------- */
+const frames = () => state.obs.filter(o => o.status==="ok" && String(o.band)===$("#bband").value);
+function refreshBlink(reset){
+  const sel = $("#bband"), prev = sel.value;
+  const counts = {}; state.obs.forEach(o => { if(o.status==="ok" && state.bands.has(o.band)) counts[o.band]=(counts[o.band]||0)+1; });
+  const html = Object.keys(counts).sort().map(b => `<option value="${b}">D${b} · ${counts[b]} frames</option>`).join("");
+  if(sel.innerHTML !== html){ sel.innerHTML = html; if(counts[prev]) sel.value = prev; }  // don't rebuild (and close) the open dropdown for nothing
+  const fr = frames();
+  if(reset || state.idx >= fr.length) state.idx = 0;
+  $("#bslide").max = Math.max(0, fr.length - 1);
+  $("#play").disabled = fr.length < 2;
+  showFrame();
+}
+function showFrame(){
+  const fr = frames(), f = fr[state.idx];
+  const img = $("#bv"), ov = $("#ov"), tag = $("#btag");
+  if(!f){
+    img.hidden = ov.hidden = tag.hidden = true; $("#bempty").hidden = false;
+    $("#bempty").textContent = state.obs.length ? "Loading cutouts…" : "Search the archive, then frames appear here.";
+    $("#binfo").textContent = ""; return;
+  }
+  $("#bempty").hidden = true; img.hidden = false; tag.hidden = false;
+  img.src = f.blob; $("#bslide").value = state.idx;
+  tag.textContent = `D${f.band} · ${fmtDate(f.date)}`;
+  $("#binfo").textContent = `frame ${state.idx+1}/${fr.length} · MJD ${f.time.toFixed(4)}` + (f.phot && f.phot.wavelength ? ` · ${f.phot.wavelength.toFixed(3)} µm` : "");
+  drawOverlay(f);
+  state.sel = f.i; state.obs.forEach(o => $("#c"+o.i)?.classList.toggle("sel", o.i===f.i));
+}
+function drawOverlay(f){
+  const ov = $("#ov"); ov.hidden = !$("#ovl").checked; if(ov.hidden) return;
+  const p = f.phot || f.pos, img = $("#bv");
+  const nx = p ? p.nx : img.naturalWidth || 58, ny = p ? p.ny : img.naturalHeight || 58;
+  const cx = p ? (p.x + .5) / nx * 100 : 50, cy = p ? 100 - (p.y + .5) / ny * 100 : 50;
+  const R = (r) => (r / nx * 100).toFixed(2), ry = (r) => (r / ny * 100).toFixed(2);
+  const rap = +$("#rap").value, rin = +$("#rin").value, rout = +$("#rout").value;
+  const ell = (r, cls, dash) => `<ellipse cx="${cx}" cy="${cy}" rx="${R(r)}" ry="${ry(r)}" fill="none" stroke="${cls}" stroke-width="0.6" ${dash?'stroke-dasharray="2 1.5"':""}/>`;
+  ov.innerHTML = ell(rap,"#6ee7ff") + ell(rin,"#ffffff88",true) + ell(rout,"#ffffff88",true);
+}
+$("#ovl").onchange = () => showFrame();
+["rap","rin","rout"].forEach(id => $("#"+id).addEventListener("change", showFrame));
+$("#bband").onchange = () => { state.idx = 0; refreshBlink(); };
+$("#bslide").oninput = (e) => { state.idx = +e.target.value; showFrame(); };
+function setPlay(on){
+  clearInterval(state.timer); state.timer = null;
+  $("#play").textContent = on ? "❚❚ Pause" : "▶ Play";
+  if(on) state.timer = setInterval(() => { const n = frames().length; if(n){ state.idx = (state.idx + 1) % n; showFrame(); } }, 1000 / +$("#fps").value);
+}
+$("#play").onclick = () => setPlay(!state.timer);
+$("#fps").oninput = () => { if(state.timer) setPlay(true); };
+document.addEventListener("keydown", (e) => {
+  if(/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  const n = frames().length; if(!n) return;
+  if(e.key === " "){ e.preventDefault(); setPlay(!state.timer); }
+  if(e.key === "ArrowRight"){ state.idx = (state.idx+1) % n; showFrame(); }
+  if(e.key === "ArrowLeft"){ state.idx = (state.idx-1+n) % n; showFrame(); }
+});
+
+/* ---------- spectrum ---------- */
+$("#spec").onclick = runSpectrum;
+$("#stop").onclick = () => { state.specStop = true; };
+function stopAll(){ state.specStop = true; setPlay(false); }
+
+async function runSpectrum(){
+  if(state.specBusy) return;
+  const items = state.obs.filter(o => state.bands.has(o.band));
+  if(!items.length) return toast("Search first, and keep at least one band on.");
+  const rap = +$("#rap").value, rin = +$("#rin").value, rout = +$("#rout").value;
+  if(!(rap > 0 && rap < rin && rin < rout)) return toast("Radii need: source < sky in < sky out.");
+  state.specBusy = true; state.specStop = false; const run = state.run;
+  state.obs.forEach(o => { o.phot = null; o.perr = null; });
+  $("#spec").disabled = true; $("#stop").disabled = false; $("#csv").disabled = true;
+  let done = 0, fail = 0;
+  const upd = () => { $("#sinfo").textContent = `measuring ${done}/${items.length}` + (fail ? ` · ${fail} skipped` : ""); };
+  upd(); draw();
+  await pool(items, 3, async (o) => {
+    try{
+      o.phot = await getJSON(`${API}/photometry?url=${encodeURIComponent(o.url)}&${tparams()}&r_ap=${rap}&r_in=${rin}&r_out=${rout}`);
+    }catch(e){ o.perr = String(e.message || e); fail++; }
+    done++; upd(); paintCard(o); schedDraw();
+  }, () => run === state.run && !state.specStop);
+  state.specBusy = false; $("#spec").disabled = false; $("#stop").disabled = true;
+  const n = state.obs.filter(o => o.phot && o.phot.wavelength != null).length;
+  $("#sinfo").textContent = (state.specStop ? "stopped · " : "done · ") + `${n} points` + (fail ? ` · ${fail} skipped (saturated, edge or flagged)` : "");
+  $("#csv").disabled = n === 0; draw(); fillTable(); refreshBlink();
+}
+
+let raf = 0; const schedDraw = () => { if(!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+function niceTicks(lo, hi, n){
+  const span = hi - lo || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1,2,2.5,5,10].map(m => m*mag).find(s => s >= step0) || 10*mag;
+  const out = []; for(let v = Math.ceil(lo/step)*step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(10)); return out;
+}
+const fmtNum = (v) => Math.abs(v) >= 1000 ? (v/1000).toFixed(v%1000===0?0:1) + "k" : String(+v.toFixed(2));
+let hit = [];
+function draw(){
+  const cv = $("#plot"), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight; cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const M = {l:62, r:14, t:22, b:40};
+  const pts = state.obs.filter(o => state.bands.has(o.band) && o.phot && o.phot.wavelength != null);
+  const log = $("#logy").checked;
+  const xmin = .7, xmax = 5.1, px = (w) => M.l + (w - xmin) / (xmax - xmin) * (W - M.l - M.r);
+  let lo = 0, hi = 1;
+  if(pts.length){
+    const vals = pts.flatMap(o => [o.phot.flux_uJy - o.phot.err_uJy, o.phot.flux_uJy + o.phot.err_uJy]);
+    if(log){ const pos = pts.map(o => o.phot.flux_uJy).filter(v => v > 0);
+      lo = pos.length ? Math.min(...pos) / 1.6 : 1; hi = (pos.length ? Math.max(...pos) : 10) * 1.6; lo = Math.max(lo, 1e-3); }
+    else { lo = Math.min(0, ...vals); hi = Math.max(...vals) * 1.08 || 1; }
+  }
+  const py = log ? (v) => M.t + (1 - (Math.log10(Math.max(v, lo)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * (H - M.t - M.b)
+                 : (v) => M.t + (1 - (v - lo) / (hi - lo)) * (H - M.t - M.b);
+  // band stripes
+  g.font = "11px system-ui"; g.textAlign = "center";
+  for(let b=1;b<=6;b++){ const [a,c] = BANDS[b]; g.fillStyle = COL[b] + (b%2 ? "14" : "0a");
+    g.fillRect(px(a), M.t, px(c) - px(a), H - M.t - M.b); g.fillStyle = COL[b] + "cc"; g.fillText("D"+b, (px(a)+px(c))/2, 14); }
+  // grid + axes
+  g.strokeStyle = "#222c44"; g.fillStyle = "#8c98b3"; g.lineWidth = 1; g.textAlign = "center";
+  for(const t of [1,2,3,4,5]){ g.beginPath(); g.moveTo(px(t), M.t); g.lineTo(px(t), H-M.b); g.stroke(); g.fillText(t, px(t), H-M.b+15); }
+  g.fillText("wavelength (µm)", (M.l + W - M.r)/2, H-8);
+  g.textAlign = "right";
+  const yt = log ? [] : niceTicks(lo, hi, 5);
+  if(log){ for(let e=Math.ceil(Math.log10(lo)); e<=Math.floor(Math.log10(hi)); e++) yt.push(Math.pow(10,e)); }
+  for(const t of yt){ const y = py(t); g.beginPath(); g.moveTo(M.l, y); g.lineTo(W-M.r, y); g.stroke(); g.fillText(fmtNum(t), M.l-6, y+4); }
+  g.save(); g.translate(14, (M.t + H - M.b)/2); g.rotate(-Math.PI/2); g.textAlign = "center"; g.fillText("flux (µJy)", 0, 0); g.restore();
+  g.strokeStyle = "#2b3756"; g.strokeRect(M.l, M.t, W-M.l-M.r, H-M.t-M.b);
+  hit = [];
+  if(!pts.length){ g.fillStyle = "#8c98b3"; g.textAlign = "center";
+    g.fillText(state.obs.length ? "Press “Extract spectrum”" : "Search the archive first", (M.l+W-M.r)/2, H/2); return; }
+  // points
+  for(const o of pts){
+    const p = o.phot, x = px(p.wavelength), y = py(p.flux_uJy), col = COL[o.band] || "#fff";
+    g.strokeStyle = col + "aa"; g.lineWidth = 1.2;
+    g.beginPath(); g.moveTo(x, py(p.flux_uJy - p.err_uJy)); g.lineTo(x, py(p.flux_uJy + p.err_uJy)); g.stroke();
+    const warn = p.warnings && p.warnings.length, off = p.band_ok === false;
+    g.beginPath(); g.arc(x, y, 4, 0, 7);
+    g.fillStyle = off ? "#080b12" : col; g.fill();
+    g.lineWidth = 1.8; g.strokeStyle = off ? "#f87171" : (warn ? "#fbbf24" : "#080b12"); g.stroke();
+    hit.push({x, y, o});
+  }
+}
+window.addEventListener("resize", draw);
+$("#logy").onchange = draw;
+$("#plot").addEventListener("mousemove", (e) => {
+  const r = e.target.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bd = 14*14;
+  for(const h of hit){ const d = (h.x-mx)**2 + (h.y-my)**2; if(d < bd){ bd = d; best = h; } }
+  const tip = $("#tip");
+  state.hover = best ? best.o : null;
+  if(!best){ tip.style.display = "none"; return; }
+  const p = best.o.phot;
+  tip.innerHTML = `<b style="color:${COL[best.o.band]}">D${best.o.band}</b> · ${p.wavelength.toFixed(3)} µm<br>` +
+    `flux ${p.flux_uJy.toFixed(0)} ± ${p.err_uJy.toFixed(0)} µJy<br>S/N ${p.snr ? p.snr.toFixed(1) : "–"}<br>${fmtDate(best.o.date)}` +
+    (p.band_ok === false ? `<br><span class="err">wavelength outside band</span>` : "") +
+    (p.warnings && p.warnings.length ? `<br><span style="color:var(--warn)">${esc(p.warnings.join(", "))}</span>` : "");
+  tip.style.display = "block"; tip.style.left = Math.min(mx + 14, r.width - 190) + "px"; tip.style.top = (my + 10) + "px";
+});
+$("#plot").addEventListener("mouseleave", () => { state.hover = null; $("#tip").style.display = "none"; });
+$("#plot").addEventListener("click", () => { if(state.hover) selectObs(state.hover); });
+
+function sortedPts(){ return state.obs.filter(o => o.phot && o.phot.wavelength != null).sort((a,b) => a.phot.wavelength - b.phot.wavelength); }
+function fillTable(){
+  const t = $("#tbl");
+  t.innerHTML = "<tr><th>band</th><th>λ µm</th><th>flux µJy</th><th>err</th><th>S/N</th><th>date</th></tr>" +
+    sortedPts().map(o => `<tr><td>D${o.band}</td><td>${o.phot.wavelength.toFixed(3)}</td><td>${o.phot.flux_uJy.toFixed(0)}</td><td>${o.phot.err_uJy.toFixed(0)}</td><td>${o.phot.snr ? o.phot.snr.toFixed(1) : ""}</td><td>${fmtDate(o.date)}</td></tr>`).join("");
+}
+$("#csv").onclick = () => {
+  const rows = ["wavelength_um,bandwidth_um,flux_uJy,err_uJy,snr,detector,mjd,warnings"].concat(sortedPts().map(o => {
+    const p = o.phot; return [p.wavelength, p.bandwidth, p.flux_uJy, p.err_uJy, p.snr, p.detector, p.mjd, '"'+(p.warnings||[]).join(" ")+'"'].join(","); }));
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([rows.join("\n")], {type:"text/csv"}));
+  a.download = `spectrum_${state.target.ra}_${state.target.dec}.csv`; a.click();
+};
+$("#legend").innerHTML = [1,2,3,4,5,6].map(b => `<span><i style="background:${COL[b]}"></i>D${b} ${BANDS[b][0]}–${BANDS[b][1]} µm</span>`).join("") +
+  `<span><i style="background:none;border:2px solid #f87171"></i>λ outside band</span><span><i style="background:none;border:2px solid #fbbf24"></i>flag warning</span>`;
+buildChips(); draw();
+</script>
+</body>
+</html>
