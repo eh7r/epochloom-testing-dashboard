@@ -54,8 +54,9 @@ TAP_URL = "https://irsa.ipac.caltech.edu/TAP"
 # URL after /ibe/data/spherex/ (ASSUMPTION: checked against IRSA docs, not yet
 # against a live file; if it 404s you will see it in the terminal log).
 S3_BASE = os.environ.get("SPHEREX_S3_BASE", "https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/")
-# Order in which cutout sources are tried. Example: SPHEREX_SOURCES=s3,irsa
-SOURCES = [x.strip() for x in os.environ.get("SPHEREX_SOURCES", "irsa,s3").split(",") if x.strip()]
+# Order in which cutout sources are tried. AWS first: it reads only the pixels we
+# need and does not have IRSA's frequent 503s. Example: SPHEREX_SOURCES=irsa,s3
+SOURCES = [x.strip() for x in os.environ.get("SPHEREX_SOURCES", "s3,irsa").split(",") if x.strip()]
 
 app = FastAPI(title="SPHEREx Explorer")
 app.add_middleware(
@@ -193,7 +194,11 @@ def _from_s3(url, ra, dec, size, tmp):
         y0, y1 = max(0, int(round(y)) - half), min(ny, int(round(y)) + half + 1)
         out = fits.HDUList([fits.PrimaryHDU(header=h[0].header)])
         for name in ("IMAGE", "FLAGS", "VARIANCE", "ZODI"):
-            if name not in h:
+            # h[name] in try/except, not "name in h": the membership test makes
+            # astropy read every remaining header, i.e. extra S3 requests.
+            try:
+                h[name]
+            except KeyError:
                 continue
             hd = h[name].header.copy()
             for k in ("BSCALE", "BZERO"):

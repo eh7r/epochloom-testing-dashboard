@@ -143,11 +143,16 @@ th:first-child,td:first-child{text-align:left}
       <select id="survey" style="width:auto">
         <!-- HiPS mirrors on IRSA (CDS is unreachable from some networks; IRSA is already required) -->
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color">DSS2 color</option>
+        <option value="https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube">SPHEREx DR1 (102 λ)</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/red">DSS2 red</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color">2MASS color</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1">AllWISE color</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/color">SDSS DR9 color</option>
       </select>
+      <span id="cubectl" hidden style="display:inline-flex;align-items:center;gap:8px">
+        <input type="range" id="slice" min="0" max="101" value="0" style="width:180px">
+        <span id="slicelbl" class="hint" style="margin:0;font-family:var(--mono)">λ –</span>
+      </span>
       <span id="mapmsg" class="hint" style="margin:0">pink cross = target · cyan box = SPHEREx cutout</span>
     </div>
     <div id="aladin"></div>
@@ -276,7 +281,38 @@ function mapShow(ra, dec, size){
   const h = size / 2, dr = h / Math.max(0.05, Math.cos(dec * Math.PI / 180));
   aOvl.add(A.polygon([[ra-dr,dec-h],[ra+dr,dec-h],[ra+dr,dec+h],[ra-dr,dec+h]]));
 }
-$("#survey").onchange = (e) => aladin && aladin.setImageSurvey(e.target.value);
+// SPHEREx DR1 all-sky cube on IRSA: 102 wavelength slices, 0.75-5 um. The slider picks the slice.
+const CUBE = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube";
+let cubeWl = null;
+async function cubeWavelengths(){
+  if(cubeWl) return cubeWl;
+  try{
+    const t = await (await fetch(CUBE + "/properties")).text();
+    const m = /data_cube_crval3_arr\s*=\s*([^\n]+)/.exec(t);
+    cubeWl = m ? m[1].trim().split(/\s+/).map(Number) : [];
+  }catch(e){ cubeWl = []; }
+  return cubeWl;
+}
+async function showSlice(i){
+  const wl = await cubeWavelengths();
+  const L = aladin && aladin.getBaseImageLayer && aladin.getBaseImageLayer();
+  // Aladin maps a frequency linearly onto the cube's slices (fmin = c/em_max, fmax = c/em_min).
+  // setSliceNumber() goes through wavelength instead, which lands on the wrong slice for
+  // SPHEREx's unevenly spaced cube, so ask for the frequency at the centre of slice i.
+  if(L && L.setFrequency && L.cubeDepth && L.emMin && L.emMax){
+    const c = 299792458, fmin = c / L.emMax, fmax = c / L.emMin;
+    L.setFrequency({value: fmin + (i + 0.5) / L.cubeDepth * (fmax - fmin)});
+  } else if(L && L.setSliceNumber) L.setSliceNumber(i);
+  $("#slicelbl").textContent = wl[i] ? `λ ${wl[i].toFixed(3)} µm (${i+1}/${wl.length})` : `slice ${i+1}`;
+}
+$("#survey").onchange = async (e) => {
+  if(!aladin) return;
+  aladin.setImageSurvey(e.target.value);
+  const cube = e.target.value === CUBE;
+  $("#cubectl").hidden = !cube;
+  if(cube){ const wl = await cubeWavelengths(); if(wl.length) $("#slice").max = wl.length - 1; showSlice(+$("#slice").value); }
+};
+$("#slice").oninput = (e) => showSlice(+e.target.value);
 // mapInit() is called by the module script that loads Aladin Lite.
 
 async function search(){
