@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from astrometry import propagate
+import catalogs
 from photometry import PhotometryError, measure
 
 conf.remote_timeout = 120
@@ -135,9 +136,10 @@ def observations(
     """
     cache = CACHE / ("obs_" + hashlib.sha1(f"{ra:.6f}|{dec:.6f}|{limit}".encode()).hexdigest() + ".json")
     last = None
-    for attempt in range(1 if cache.exists() else 3):  # cached answer: don't make the user wait for retries
+    have_cache = cache.exists() or bool(_obs_nearest(ra, dec))
+    for attempt in range(1 if have_cache else 3):  # cached answer: one short try, no retries
         try:
-            table = tap_query(q)
+            table = tap_query(q, timeout=15 if have_cache else TAP_TIMEOUT)
             rows = [
                 {
                     "url": str(r["url"]),
@@ -147,6 +149,7 @@ def observations(
                 for r in table
             ]
             cache.write_text(json.dumps(rows))
+            _obs_index_add(cache.name, ra, dec, limit)
             return rows
         except Exception as e:  # network error, 503, ...
             last = e
@@ -154,7 +157,40 @@ def observations(
     if cache.exists():  # IRSA is down: serve the last good answer for this position
         print(f"[observations] IRSA TAP failed ({last}); serving cached result")
         return json.loads(cache.read_text())
+    near = _obs_nearest(ra, dec)
+    if near:  # a saved search a few arcsec/arcmin away covers the same detector images (~3.5 deg wide)
+        print(f"[observations] IRSA TAP failed ({last}); serving cached result {near[1]:.1f}\" away")
+        return json.loads((CACHE / near[0]).read_text())[:limit]
     raise HTTPException(502, f"IRSA TAP query failed: {last}")
+
+
+_OBS_INDEX = CACHE / "obs_index.json"  # cache file -> [ra, dec, limit] of the query that made it
+
+
+def _obs_index_add(name, ra, dec, limit):
+    try:
+        idx = json.loads(_OBS_INDEX.read_text()) if _OBS_INDEX.exists() else {}
+        idx[name] = [ra, dec, limit]
+        _OBS_INDEX.write_text(json.dumps(idx))
+    except Exception as e:
+        print(f"[observations] index not updated: {e}")
+
+
+def _obs_nearest(ra, dec, max_deg=0.1):
+    """Closest cached search within max_deg (largest limit wins ties): (file, arcsec) or None."""
+    try:
+        idx = json.loads(_OBS_INDEX.read_text())
+    except Exception:
+        return None
+    best = None
+    c0 = SkyCoord(ra, dec, unit="deg")
+    for name, (r, d, lim) in idx.items():
+        if not (CACHE / name).exists():
+            continue
+        sep = c0.separation(SkyCoord(r, d, unit="deg")).deg
+        if sep <= max_deg and (best is None or (sep, -lim) < (best[1], -best[2])):
+            best = (name, sep, lim)
+    return (best[0], best[1] * 3600) if best else None
 
 
 # --------------------------------------------------------------------------
@@ -354,6 +390,47 @@ def photometry(
         return measure(path, ra, dec, r_ap, r_in, r_out)
     except PhotometryError as e:
         raise HTTPException(422, str(e))
+
+
+# --------------------------------------------------------------------------
+# Catalog astrometry (IRSA: Gaia DR3, CatWISE2020, AllWISE, 2MASS) - see catalogs.py
+# --------------------------------------------------------------------------
+@app.get("/astrometry")
+def astrometry_ep(target: str | None = Query(None, description="one of: " + ", ".join(catalogs.TARGETS))):
+    """Reference astrometry for the demo targets, straight from the IRSA catalog row:
+    ra, dec, ref epoch, pmra, pmdec (mas/yr), parallax, source table and id.
+    Without `target`: all targets (failures reported per target)."""
+    if target:
+        if target not in catalogs.TARGETS:
+            raise HTTPException(404, "unknown target; known: " + ", ".join(catalogs.TARGETS))
+        try:
+            return catalogs.astrometry(target)
+        except catalogs.CatalogError as e:
+            raise HTTPException(502, str(e))
+    out = []
+    for k in catalogs.TARGETS:
+        try:
+            out.append(catalogs.astrometry(k))
+        except catalogs.CatalogError as e:
+            out.append({"target": k, "name": catalogs.TARGETS[k]["name"], "error": str(e)})
+    return out
+
+
+@app.get("/catalog")
+def catalog_ep(
+    catalog: str = Query("gaia_dr3_source", description="gaia_dr3_source | catwise_2020 | allwise_p3as_psd | fp_psc"),
+    ra: float = Query(..., ge=0, le=360),
+    dec: float = Query(..., ge=-90, le=90),
+    radius: float = Query(120, gt=0, le=900, description="arcsec"),
+):
+    """Cone search of an IRSA catalog (rows as stored in the catalog, positions at the catalog's own epoch)."""
+    if catalog not in catalogs.COLS:
+        raise HTTPException(422, "catalog must be one of " + ", ".join(catalogs.COLS))
+    try:
+        rows = catalogs.cone(catalog, ra, dec, radius)
+    except catalogs.CatalogError as e:
+        raise HTTPException(502, str(e))
+    return {"catalog": catalogs.LABEL[catalog], "table": catalog, "radius_arcsec": radius, "rows": rows[:3000]}
 
 
 @app.get("/health")

@@ -101,9 +101,16 @@ th:first-child,td:first-child{text-align:left}
     <select id="preset">
       <option value="304.69253,42.45383">Test star (verified, smooth spectrum)</option>
       <option value="304.693508808,42.4436872991">Notebook field (IRSA tutorial)</option>
-      <option value="217.36943,-62.67393">Proxima Cen, 2026 position (computed)</option>
+      <!-- filled from /astrometry (IRSA catalogs) at page load -->
+      <option data-target="barnard" value="">Barnard's Star (loading from IRSA…)</option>
+      <option data-target="epsindib" value="">ε Indi B (loading from IRSA…)</option>
+      <option data-target="wise0855" value="">WISE 0855−0714 (loading from IRSA…)</option>
+      <option data-target="rwaur" value="">RW Aurigae A (loading from IRSA…)</option>
+      <option data-target="rdra" value="">R Draconis (loading from IRSA…)</option>
+      <option value="217.36943,-62.67393">Proxima Cen, 2026 position (computed, not catalog-verified)</option>
       <option value="">Custom…</option>
     </select>
+    <div id="presetsrc" class="hint" style="margin-top:6px"></div>
     <div class="row2">
       <div><label for="ra">RA (deg)</label><input id="ra" type="number" step="any" value="304.69253"></div>
       <div><label for="dec">Dec (deg)</label><input id="dec" type="number" step="any" value="42.45383"></div>
@@ -269,13 +276,34 @@ fetch(API + "/openapi.json").then(r => { if(!r.ok) throw 0; $("#srv").textConten
   .catch(() => { $("#srv").textContent="server offline"; $("#srv").className="pill off"; });
 
 /* ---------- target form ---------- */
+// Catalog astrometry for the demo targets (server: IRSA Gaia DR3 / CatWISE2020).
+const ASTRO = {};
+function presetSource(){
+  const opt = $("#preset").selectedOptions[0], d = opt && ASTRO[opt.dataset.target];
+  if(!d){ $("#presetsrc").textContent = ""; return; }
+  const f = (v, n) => v == null ? "–" : (+v).toFixed(n);
+  $("#presetsrc").innerHTML = `Source: <b>${esc(d.catalog)}</b> <code>${esc(d.source_table)}</code> id ${esc(d.source_id)} · ` +
+    `epoch ${f(d.ref_epoch,3)} · pm ${f(d.pmra,1)}, ${f(d.pmdec,1)} mas/yr · parallax ${d.parallax == null ? "n/a" : f(d.parallax,2) + " mas"}` +
+    `<br><span style="opacity:.8">Picked: ${esc(d.selection)}. Via IRSA.</span>`;
+}
+getJSON(API + "/astrometry").then(list => {
+  for(const d of list){
+    const opt = document.querySelector(`#preset option[data-target="${d.target}"]`); if(!opt) continue;
+    if(d.error){ opt.textContent = `${d.name} (catalog lookup failed)`; opt.disabled = true; continue; }
+    ASTRO[d.target] = d;
+    opt.value = [d.ra, d.dec, d.pmra, d.pmdec, d.ref_epoch].join(",");
+    opt.textContent = `${d.name} · ${d.catalog}`;
+  }
+  presetSource();
+}).catch(e => document.querySelectorAll("#preset option[data-target]").forEach(o => { o.textContent = o.textContent.replace("loading from IRSA…", "IRSA lookup failed"); o.disabled = true; }));
 $("#preset").onchange = (e) => {
+  presetSource();
   if(!e.target.value) return;
   // preset value: "ra,dec[,pmra,pmdec,epoch]"
   const [ra,dec,pmra="0",pmdec="0",epoch="2016.0"] = e.target.value.split(",");
   $("#ra").value = ra; $("#dec").value = dec; $("#pmra").value = pmra; $("#pmdec").value = pmdec; $("#epoch").value = epoch;
 };
-["ra","dec"].forEach(id => $("#"+id).addEventListener("input", () => $("#preset").value = ""));
+["ra","dec","pmra","pmdec","epoch"].forEach(id => $("#"+id).addEventListener("input", () => { $("#preset").value = ""; presetSource(); }));
 $("#go").onclick = search;
 $("#mapgo").onclick = () => mapShow(+$("#ra").value, +$("#dec").value, +$("#size").value);
 
