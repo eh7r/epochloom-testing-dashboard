@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 
 from astrometry import propagate
 import catalogs
-from photometry import PhotometryError, _flag_names, measure
+from photometry import PhotometryError, _flag_names, centroid, measure
 import diff as diffmod
 from pydantic import BaseModel, Field
 
@@ -622,6 +622,28 @@ def hips_tile(path: str):
     if not _HIPS_TILE.fullmatch(path):
         raise HTTPException(404, "not a SPHEREx HiPS PNG tile")
     return RedirectResponse(f"{SPHEREX_HIPS}/{path}", status_code=302)
+
+
+@app.get("/centroid")
+def centroid_ep(
+    url: str,
+    ra: float = Query(..., ge=0, le=360),
+    dec: float = Query(..., ge=-90, le=90),
+    size: float = Query(0.1, gt=0, le=0.5),
+    pmra: float = Query(0.0, ge=-20000, le=20000),
+    pmdec: float = Query(0.0, ge=-20000, le=20000),
+    epoch: float | None = Query(None, ge=1900, le=2100),
+    mjd: float | None = Query(None, ge=40000, le=80000),
+):
+    """Measured (not catalog) position of the target in one SPHEREx frame: flux-weighted
+    centroid near the propagated position. 422 with the reason when it is not measurable."""
+    pra, pdec = frame_pos(ra, dec, pmra, pmdec, epoch, mjd)
+    path = get_cutout_fits(url, pra, pdec, size)
+    try:
+        c = centroid(path, pra, pdec)
+    except PhotometryError as e:
+        raise HTTPException(422, str(e))
+    return c | {"predicted_ra": pra, "predicted_dec": pdec, "label": "SPHEREx centroid (computed from our cutout)"}
 
 
 @app.get("/health")

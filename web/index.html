@@ -176,13 +176,16 @@ th:first-child,td:first-child{text-align:left}
     <div class="maphead">
       <h2 style="margin:0">Motion track · catalog epochs</h2>
       <button id="mtgo">Show motion track</button>
+      <button id="cengo" title="Measure the target's centroid in every loaded SPHEREx frame and add it to the track">+ SPHEREx centroids</button>
       <span id="mtmsg" class="hint" style="margin:0"></span>
     </div>
     <div class="legend" style="margin-top:0">
       <span><svg width="34" height="10" style="vertical-align:-1px;margin-right:5px"><line x1="0" y1="5" x2="22" y2="5" stroke="#4ade80" stroke-width="2"/><circle cx="28" cy="5" r="4" fill="#4ade80"/></svg>observed (catalog row: 2MASS, AllWISE, CatWISE2020, Gaia DR3)</span>
       <span><svg width="34" height="10" style="vertical-align:-1px;margin-right:5px"><line x1="0" y1="5" x2="22" y2="5" stroke="#fbbf24" stroke-width="2" stroke-dasharray="4 3"/><circle cx="28" cy="5" r="3.5" fill="none" stroke="#fbbf24" stroke-width="1.5"/></svg>computed (propagated yearly from the reference epoch to today)</span>
+      <span><svg width="14" height="10" style="vertical-align:-1px;margin-right:5px"><circle cx="7" cy="5" r="4" fill="#22d3ee"/></svg>SPHEREx centroid (measured by us in each frame, ±0.3″ or more; not a catalog value)</span>
     </div>
     <div id="mtpm" class="info"></div>
+    <div id="infocard" class="hint" style="margin:8px 0 4px;line-height:1.6"></div>
     <div style="overflow:auto;max-height:260px"><table id="mttbl"></table></div>
     <div class="hint">Click a row to centre the map there. The yearly parallax wobble (&lt; 1″) is far below SPHEREx's ~6″ pixel, so it is not visible and not drawn. RW Aur and R Dra move only ~0.02–0.03″/yr: their path is essentially a point; they are variability targets.</div>
   </div>
@@ -199,6 +202,7 @@ th:first-child,td:first-child{text-align:left}
       <div class="bar">
         <select id="bband" style="width:auto"></select>
         <button id="play">▶ Play</button>
+        <button id="webm" title="Save this band's timelapse (current mode) as a WebM video">⤓ WebM</button>
         <label style="margin:0;display:flex;align-items:center;gap:6px">fps <input id="fps" type="range" min="1" max="8" value="2" style="width:70px"></label>
         <label style="margin:0;display:flex;align-items:center;gap:5px"><input id="ovl" type="checkbox" checked> apertures</label>
         <label style="margin:0;display:flex;align-items:center;gap:5px" title="One brightness scale for all frames of the band, so real brightness changes stay visible. Off = each frame stretched on its own."><input id="shared" type="checkbox" checked> shared stretch</label>
@@ -372,6 +376,7 @@ function mapInit(){
       mt.cmpLine = A.graphicOverlay({name:"computed path", color:"#fbbf24", lineWidth:2, lineDash:[6,5]}); aladin.addOverlay(mt.cmpLine);
       mt.cmpPts  = A.graphicOverlay({name:"computed points", color:"#fbbf24", lineWidth:1.5}); aladin.addOverlay(mt.cmpPts);
       mt.obsLine = A.graphicOverlay({name:"observed path", color:"#4ade80", lineWidth:2.5}); aladin.addOverlay(mt.obsLine);
+      mt.cen     = A.graphicOverlay({name:"SPHEREx centroids", color:"#22d3ee", lineWidth:1.5}); aladin.addOverlay(mt.cen);
       mt.labels  = A.catalog({name:"epochs", sourceSize:6, color:"#e7ecf766", shape:"circle", displayLabel:true,
                               labelColumn:"label", labelColor:"#e7ecf7", labelFont:"12px system-ui"}); aladin.addCatalog(mt.labels);
     }catch(e){ console.error("motion-track layers unavailable:", e); mt.broken = true; }
@@ -417,7 +422,7 @@ $("#wiseview").onclick = () => {
 /* ---------- motion track (/motion: catalog epochs + computed path) ---------- */
 const mt = {};
 const jyDate = (jy) => new Date(Date.UTC(2000,0,1,12) + (jy - 2000) * 365.25 * 864e5);  // Julian year -> date
-function mtClear(){ ["cmpLine","cmpPts","obsLine","labels"].forEach(k => { try{ mt[k] && mt[k].removeAll(); }catch(e){ console.error(e); } }); $("#mttbl").innerHTML = ""; $("#mtpm").textContent = ""; $("#mtmsg").textContent = ""; }
+function mtClear(){ mt.cenRows = []; $("#infocard").textContent = ""; ["cmpLine","cmpPts","obsLine","labels","cen"].forEach(k => { try{ mt[k] && mt[k].removeAll(); }catch(e){ console.error(e); } }); $("#mttbl").innerHTML = ""; $("#mtpm").textContent = ""; $("#mtmsg").textContent = ""; }
 async function motionTrack(){
   const opt = $("#preset").selectedOptions[0], key = opt && opt.dataset.target && ASTRO[opt.dataset.target] ? opt.dataset.target : null;
   const ra = +$("#ra").value, dec = +$("#dec").value, pmra = +$("#pmra").value || 0, pmdec = +$("#pmdec").value || 0, epoch = +$("#epoch").value;
@@ -439,7 +444,7 @@ function drawMotion(m){
   const dec0 = cmp[0].dec, cosd = Math.cos(dec0 * Math.PI / 180);
   const ras = all.map(p => p.ra), decs = all.map(p => p.dec);
   const ext = Math.max((Math.max(...ras) - Math.min(...ras)) * cosd, Math.max(...decs) - Math.min(...decs));  // deg
-  const r = Math.max(0.6 / 3600, ext / 70);
+  const r = Math.max(0.6 / 3600, ext / 70); mt.r = r;
   if(cmp.length > 1) mt.cmpLine.add(A.polyline(cmp.map(p => [p.ra, p.dec])));
   cmp.forEach(p => mt.cmpPts.add(A.circle(p.ra, p.dec, r * 0.8, {color:"#fbbf24", lineWidth:1.5})));
   if(obs.length > 1) mt.obsLine.add(A.polyline(obs.map(p => [p.ra, p.dec])));
@@ -458,17 +463,37 @@ function drawMotion(m){
 }
 function fillMotionTable(m){
   const f = (v, n) => v == null ? "–" : (+v).toFixed(n), ref = m.ref;
+  infoCard(m);
   $("#mtpm").innerHTML = `pmRA* ${f(ref.pmra,1)} · pmDec ${f(ref.pmdec,1)} mas/yr · total ${f(m.pm_total_arcsec_per_yr,3)}″/yr · parallax ${ref.parallax == null ? "n/a" : f(ref.parallax,2) + " mas"}` +
     ` · reference: ${esc(ref.catalog || "")}${ref.source_id ? " " + esc(ref.source_id) : ""} @ ${f(ref.ref_epoch,3)}`;
   const rows = m.observed.map(p => ({...p, d:p.date, src:`${p.survey} ${p.id}`, k:"observed"}))
     .concat(m.computed.map(p => ({...p, d:jyDate(p.jyear).toISOString().slice(0,10), src: p.today ? "propagated (today)" : "propagated", k:"computed"})))
+    .concat((mt.cenRows || []).map(p => ({...p, d:mjdDate(p.mjd).toISOString().slice(0,10), jyear:2000 + (p.mjd - 51544.5) / 365.25,
+      src:`D${p.band} · S/N ${p.snr.toFixed(0)} · ±${p.err_arcsec.toFixed(2)}″ · ${p.offset_from_prediction_arcsec.toFixed(2)}″ from prediction`, k:"SPHEREx centroid"})))
     .sort((a,b) => a.jyear - b.jyear);
   mt.rows = rows;
   $("#mttbl").innerHTML = "<tr><th>date</th><th>RA (deg)</th><th>Dec (deg)</th><th>source</th><th>type</th></tr>" +
     rows.map((p,i) => `<tr data-i="${i}" style="cursor:pointer"><td>${p.d}</td><td>${p.ra.toFixed(6)}</td><td>${p.dec.toFixed(6)}</td><td>${esc(p.src)}</td>` +
-      `<td style="color:${p.k === "observed" ? "#4ade80" : "#fbbf24"}">${p.k}</td></tr>`).join("") +
+      `<td style="color:${p.k === "observed" ? "#4ade80" : p.k === "computed" ? "#fbbf24" : "#22d3ee"}">${p.k}</td></tr>`).join("") +
     m.not_found.map(n => `<tr><td>–</td><td>–</td><td>–</td><td class="err">${esc(n.reason)}</td><td>no point</td></tr>`).join("");
   $("#mtmsg").textContent = `${m.observed.length} observed · ${m.computed.length} computed` + (m.not_found.length ? ` · ${m.not_found.length} survey(s) without a match` : "");
+}
+// Deterministic object card: only catalog values (IRSA rows) and simple formulas, each labelled.
+function infoCard(m){
+  const r = m.ref, f = (v, n) => (+v).toFixed(n), out = [];
+  if(!r.catalog || !r.source_id){ $("#infocard").textContent = ""; return; }
+  out.push(`<b style="color:var(--text)">${esc(r.name || "Target")}</b> · ${esc(r.catalog)} ${esc(r.source_id)}`);
+  if(r.mag) out.push(Object.entries(r.mag).filter(([,v]) => v != null).map(([k,v]) => `${k} = ${f(v,2)} mag`).join(", ") + " (catalog)");
+  out.push(`proper motion ${f(m.pm_total_arcsec_per_yr,3)}″/yr (catalog pm) → ${f(m.pm_total_arcsec_per_yr * 10,1)}″ per decade, ` +
+           `${f(m.pm_total_arcsec_per_yr / 6.15,2)} SPHEREx pixels per year (computed)`);
+  if(r.parallax > 0){
+    const d = 1000 / r.parallax, vt = 4.74047 * m.pm_total_arcsec_per_yr * d;
+    out.push(`parallax ${f(r.parallax,3)} mas (catalog) → distance ≈ ${f(d,2)} pc = ${f(d * 3.26156,2)} ly, ` +
+             `tangential velocity ≈ ${f(vt,1)} km/s (computed: 1/parallax, 4.74·μ·d; no error propagation)`);
+  } else out.push("no parallax in this catalog row: distance not computed");
+  const seen = [...new Set(m.observed.map(o => o.survey))], miss = m.not_found.map(n => n.survey);
+  out.push(`seen in: ${esc(seen.join(", ") || "none")}` + (miss.length ? ` · not found in: ${esc(miss.join(", "))}` : "") + ` · selected by: ${esc(r.selection || "user input")}`);
+  $("#infocard").innerHTML = out.join("<br>");
 }
 $("#mttbl").addEventListener("click", (e) => {
   const tr = e.target.closest("tr[data-i]"); if(!tr || !aladin) return;
@@ -476,6 +501,32 @@ $("#mttbl").addEventListener("click", (e) => {
   [...$("#mttbl").rows].forEach(r => r.style.background = r === tr ? "#1d6f8740" : "");
 });
 $("#mtgo").onclick = motionTrack;
+// SPHEREx centroids (/centroid): measured positions of the target in each loaded frame.
+async function addCentroids(){
+  if(!mt.data) return toast("Show the motion track first.");
+  const fr = state.obs.filter(o => o.status === "ok");
+  if(!fr.length) return toast("Search the archive and let the frames load first.");
+  $("#cengo").disabled = true; mt.cenRows = [];
+  try{ mt.cen && mt.cen.removeAll(); }catch(e){ console.error(e); }
+  const why = {}; let done = 0; const run = state.run;
+  await pool(fr, 3, async (o) => {
+    try{
+      const c = await getJSON(`${API}/centroid?url=${encodeURIComponent(o.url)}&${tparams(o)}`);
+      if(run !== state.run) return;
+      mt.cenRows.push({...c, band:o.band, mjd:o.time});
+      try{ if(mt.cen) mt.cen.add(A.circle(c.ra, c.dec, (mt.r || 1/3600) * 0.6, {color:"#22d3ee", fillColor:"#22d3ee"})); }catch(e){ console.error(e); }
+    }catch(e){ const k = String(e.message || e).replace(/[\d.]+/g, "N"); why[k] = (why[k] || 0) + 1; }
+    $("#mtmsg").textContent = `SPHEREx centroids: ${++done}/${fr.length}…`;
+  }, () => run === state.run);
+  $("#cengo").disabled = false;
+  if(run !== state.run) return;
+  fillMotionTable(mt.data);
+  const off = mt.cenRows.map(p => p.offset_from_prediction_arcsec).sort((a,b) => a-b);
+  const refused = Object.entries(why).map(([k,n]) => `${n}× ${k}`).join("; ");
+  $("#mtmsg").textContent += ` · ${mt.cenRows.length} SPHEREx centroids` +
+    (off.length ? ` (median ${off[off.length>>1].toFixed(2)}″ from the predicted position)` : "") + (refused ? ` · refused: ${refused}` : "");
+}
+$("#cengo").onclick = addCentroids;
 
 // SPHEREx DR1 all-sky cube on IRSA: 102 wavelength slices, 0.75-5 um. The slider picks the slice.
 const CUBE = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube";
@@ -729,6 +780,36 @@ function setPlay(on){
   if(on) state.timer = setInterval(() => { const n = frames().length; if(n){ state.idx = (state.idx + 1) % n; showFrame(); } }, 1000 / +$("#fps").value);
 }
 $("#play").onclick = () => setPlay(!state.timer);
+// WebM export: draw each frame of the band on a canvas and record it (MediaRecorder, no libraries).
+async function exportWebM(){
+  const fr = frames().filter(f => diffOn() ? f.dblob : true);
+  if(fr.length < 2) return toast(diffOn() ? "Fewer than 2 subtracted frames in this band." : "Need at least 2 loaded frames.");
+  if(typeof MediaRecorder === "undefined") return toast("This browser cannot record video (MediaRecorder missing).");
+  const mime = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find(m => MediaRecorder.isTypeSupported(m));
+  if(!mime) return toast("This browser cannot record WebM.");
+  const fps = +$("#fps").value, N = 512, cv = document.createElement("canvas"); cv.width = cv.height = N;
+  const g = cv.getContext("2d"), load = (src) => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(im); im.onerror = no; im.src = src; });
+  const rec = new MediaRecorder(cv.captureStream(fps), {mimeType:mime, videoBitsPerSecond:4e6}), parts = [];
+  rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+  const stopped = new Promise(r => rec.onstop = r);
+  $("#webm").disabled = true; $("#webm").textContent = "recording…";
+  const mode = diffOn() ? "difference" : ($("#shared").checked ? "shared stretch" : "own stretch");
+  try{
+    rec.start();
+    for(const f of fr){
+      const im = await load(diffOn() ? f.dblob : blobOf(f));
+      g.imageSmoothingEnabled = true; g.fillStyle = "#000"; g.fillRect(0, 0, N, N); g.drawImage(im, 0, 0, N, N);
+      g.fillStyle = "#000a"; g.fillRect(0, 0, N, 26); g.fillStyle = "#e7ecf7"; g.font = "14px ui-monospace,monospace";
+      g.fillText(`SPHEREx D${f.band} · ${fmtDate(f.date)} UTC · ${mode}` + (diffOn() && f.dwl ? ` · λ ${f.dwl.toFixed(3)} µm` : ""), 8, 18);
+      await sleep(1000 / fps);
+    }
+    await sleep(1000 / fps); rec.stop(); await stopped;
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(parts, {type:"video/webm"}));
+    a.download = `spherex_D${fr[0].band}_${state.target.ra.toFixed(4)}_${state.target.dec.toFixed(4)}_${mode.replace(" ", "-")}.webm`; a.click();
+  }catch(e){ toast("WebM export failed: " + (e.message || e)); try{ rec.state !== "inactive" && rec.stop(); }catch(_){} }
+  $("#webm").disabled = false; $("#webm").textContent = "⤓ WebM";
+}
+$("#webm").onclick = exportWebM;
 $("#fps").oninput = () => { if(state.timer) setPlay(true); };
 document.addEventListener("keydown", (e) => {
   if(/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;

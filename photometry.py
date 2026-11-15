@@ -116,3 +116,53 @@ def measure(path, ra, dec, r_ap=2.0, r_in=3.5, r_out=6.0):
         "ny": ny,
         "good_frac": float(ap_g.sum() / n_ap),
     }
+
+
+def centroid(path, ra, dec, r_win=2.5, r_in=4.0, r_out=7.0, iters=4, min_snr=10.0):
+    """Flux-weighted centroid of the source near (ra, dec) in one cutout, as sky coordinates.
+    Background = median of a sky ring; refused (PhotometryError) if the window has saturated or
+    bad pixels, or S/N < min_snr. Error: statistical term with a 0.3" empirical floor (see below)."""
+    with fits.open(path) as h:
+        hdr = h["IMAGE"].header
+        img = h["IMAGE"].data.astype(float)
+        var = h["VARIANCE"].data.astype(float)
+        flg = h["FLAGS"].data.astype(np.int64)
+        names = _flag_names(h["FLAGS"].header)
+        wcs = WCS(hdr).celestial
+        mjd = hdr.get("MJD-OBS")
+    x0, y0 = (float(v) for v in wcs.world_to_pixel(SkyCoord(ra, dec, unit="deg")))
+    ny, nx = img.shape
+    if not (r_out + 1 < x0 < nx - r_out - 2 and r_out + 1 < y0 < ny - r_out - 2):
+        raise PhotometryError("target too close to the cutout edge")
+    bad_bits = sum(1 << b for b, n in names.items() if n in BAD_FLAGS)
+    yy, xx = np.indices(img.shape)
+    good = np.isfinite(img) & np.isfinite(var) & ((flg & bad_bits) == 0)
+    xc, yc = x0, y0
+    for _ in range(iters):
+        rr = np.hypot(xx - xc, yy - yc)
+        win, ring = rr <= r_win, (rr >= r_in) & (rr <= r_out) & good
+        if (win & ~good).any():
+            raise PhotometryError("saturated/flagged pixel in the centroid window")
+        if ring.sum() < 8:
+            raise PhotometryError("not enough clean sky pixels")
+        w = np.clip(img[win] - np.median(img[ring]), 0, None)
+        if w.sum() <= 0:
+            raise PhotometryError("no flux above the background")
+        xn, yn = float((w * xx[win]).sum() / w.sum()), float((w * yy[win]).sum() / w.sum())
+        if np.hypot(xn - x0, yn - y0) > 2.0:
+            raise PhotometryError("centroid wandered > 2 px from the predicted position (blend or no source)")
+        xc, yc = xn, yn
+    net = float((img[win] - np.median(img[ring])).sum())
+    snr = net / float(np.sqrt(var[win].sum())) if var[win].sum() > 0 else 0.0
+    if snr < min_snr:
+        raise PhotometryError(f"S/N {snr:.1f} < {min_snr:.0f}")
+    pos = wcs.pixel_to_world(xc, yc)
+    pix = float(np.sqrt(proj_plane_pixel_area(wcs)) * 3600)
+    return {"ra": float(pos.ra.deg), "dec": float(pos.dec.deg), "mjd": float(mjd) if mjd is not None else None,
+            "x": xc, "y": yc, "snr": snr, "pixel_arcsec": pix,
+            # statistical FWHM/(2.355 S/N) with a 0.3" floor: the per-frame scatter measured on the
+            # test star (2026-11-15) was 0.12-0.16" in D1 and 0.2-0.4" in D4; the statistical term alone
+            # (~0.03") is far too optimistic. Blends (e.g. the test star has a G=14 neighbour at 1.5")
+            # shift the centroid further; that is not included.
+            "err_arcsec": float(np.hypot(2.0 * pix / (2.355 * snr), 0.3)),
+            "offset_from_prediction_arcsec": float(np.hypot(xc - x0, yc - y0) * pix)}
