@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 
 from astrometry import propagate
 import catalogs
-from photometry import PhotometryError, measure
+from photometry import PhotometryError, _flag_names, measure
 import diff as diffmod
 from pydantic import BaseModel, Field
 
@@ -329,13 +329,30 @@ def _render_png(img, lo, hi, png):
     plt.imsave(png, out, cmap="gray", vmin=0, vmax=1, origin="lower")
 
 
+FLAG_RADIUS_PX = 3  # "near the target": within the default sky-ring inner radius
+
+
+def _flags_near(h, tx, ty, r=FLAG_RADIUS_PX):
+    """Names of FLAGS bits set within r px of the target (SOURCE is normal and skipped).
+    Bit names come from the file's own MSKNxxxx keywords."""
+    try:
+        flg = h["FLAGS"].data.astype(np.int64)
+        names = _flag_names(h["FLAGS"].header)
+    except Exception:
+        return []
+    yy, xx = np.indices(flg.shape)
+    near = np.bitwise_or.reduce(flg[np.hypot(xx - tx, yy - ty) <= r]) if flg.size else 0
+    return sorted(n for b, n in names.items() if (int(near) >> b) & 1 and n != "SOURCE")
+
+
 def _png_response(path, png, ra, dec, lo, hi):
     with fits.open(path) as h:  # where the target sits in this frame (for the overlay)
         ny, nx = h["IMAGE"].data.shape
         tx, ty = (float(v) for v in WCS(h["IMAGE"].header).world_to_pixel(SkyCoord(ra, dec, unit="deg")))
+        flags = _flags_near(h, tx, ty)
     return FileResponse(png, media_type="image/png",
                         headers={"X-Tx": f"{tx:.3f}", "X-Ty": f"{ty:.3f}", "X-Nx": str(nx), "X-Ny": str(ny),
-                                 "X-Lo": f"{lo:.6g}", "X-Hi": f"{hi:.6g}",
+                                 "X-Lo": f"{lo:.6g}", "X-Hi": f"{hi:.6g}", "X-Flags": ",".join(flags),
                                  "X-Ra": f"{ra:.6f}", "X-Dec": f"{dec:.6f}"})
 
 
