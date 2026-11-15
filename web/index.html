@@ -314,6 +314,17 @@ $("#survey").onchange = async (e) => {
 };
 $("#slice").oninput = (e) => showSlice(+e.target.value);
 // mapInit() is called by the module script that loads Aladin Lite.
+// Aladin's right-drag changes brightness/contrast, which confuses a demo. Swallow
+// every right-button event on the map in the capture phase, before Aladin's own
+// listeners (on the canvas inside #aladin) see it. Left-drag, wheel and click are untouched.
+(() => {
+  const box = $("#aladin");
+  const isRight = (e) => e.button === 2 || (e.buttons & 2);
+  const block = (e) => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+  box.addEventListener("contextmenu", block, true);
+  for(const t of ["mousedown","mouseup","mousemove","pointerdown","pointerup","pointermove","auxclick"])
+    box.addEventListener(t, (e) => { if(isRight(e)) block(e); }, true);
+})();
 
 async function search(){
   const ra = +$("#ra").value, dec = +$("#dec").value, size = +$("#size").value, limit = +$("#limit").value;
