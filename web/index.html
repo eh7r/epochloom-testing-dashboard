@@ -155,7 +155,7 @@ th:first-child,td:first-child{text-align:left}
       <select id="survey" style="width:auto">
         <!-- HiPS mirrors on IRSA (CDS is unreachable from some networks; IRSA is already required) -->
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color">DSS2 color</option>
-        <option value="https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube">SPHEREx DR1 (102 λ)</option>
+        <option value="spherex2d">SPHEREx DR1 · IRSA preview tiles</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/red">DSS2 red</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color">2MASS color</option>
         <option value="https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1">AllWISE color</option>
@@ -165,6 +165,7 @@ th:first-child,td:first-child{text-align:left}
         <input type="range" id="slice" min="0" max="101" value="0" style="width:180px">
         <span id="slicelbl" class="hint" style="margin:0;font-family:var(--mono)">λ –</span>
       </span>
+      <label style="margin:0;display:flex;align-items:center;gap:5px;font-size:12px;color:var(--mut)" title="Gaia DR3 sources within 5′ of the target, from IRSA (positions at Gaia's epoch 2016.0)"><input id="gaia" type="checkbox"> Gaia DR3 sources</label>
       <span id="mapmsg" class="hint" style="margin:0">pink cross = target · cyan box = SPHEREx cutout</span>
     </div>
     <div id="aladin"></div>
@@ -383,6 +384,27 @@ function mapShow(ra, dec, size){
   const h = size / 2, dr = h / Math.max(0.05, Math.cos(dec * Math.PI / 180));
   aOvl.add(A.polygon([[ra-dr,dec-h],[ra+dr,dec-h],[ra+dr,dec+h],[ra-dr,dec+h]]));
 }
+/* ---------- Gaia DR3 layer (/catalog on IRSA) ---------- */
+let gaiaCat = null, gaiaAt = null;
+async function gaiaLayer(){
+  try{
+    if(!aladin) return;
+    if(!$("#gaia").checked){ if(gaiaCat) gaiaCat.hide(); return; }
+    const t = state.target || {ra:+$("#ra").value, dec:+$("#dec").value};
+    const at = `${t.ra.toFixed(5)},${t.dec.toFixed(5)}`;
+    if(!gaiaCat){ gaiaCat = A.catalog({name:"Gaia DR3 (epoch 2016.0, IRSA)", sourceSize:9, color:"#8ab4ff", shape:"circle", onClick:"showPopup"}); aladin.addCatalog(gaiaCat); }
+    gaiaCat.show();
+    if(gaiaAt === at) return;
+    $("#mapmsg").textContent = "loading Gaia DR3 from IRSA…";
+    const d = await getJSON(`${API}/catalog?catalog=gaia_dr3_source&ra=${t.ra}&dec=${t.dec}&radius=300`);
+    gaiaCat.removeAll();
+    gaiaCat.addSources(d.rows.map(r => A.source(r.ra, r.dec, {source_id:String(r.source_id), G:r.phot_g_mean_mag, pmra:r.pmra, pmdec:r.pmdec, parallax:r.parallax})));
+    gaiaAt = at;
+    $("#mapmsg").textContent = `Gaia DR3: ${d.rows.length} sources within 5′ (blue circles, positions at 2016.0)`;
+  }catch(e){ console.error("Gaia layer:", e); $("#mapmsg").textContent = "Gaia DR3 layer unavailable: " + (e.message || e); }
+}
+$("#gaia").onchange = gaiaLayer;
+
 /* ---------- motion track (/motion: catalog epochs + computed path) ---------- */
 const mt = {};
 const jyDate = (jy) => new Date(Date.UTC(2000,0,1,12) + (jy - 2000) * 365.25 * 864e5);  // Julian year -> date
@@ -470,9 +492,12 @@ async function showSlice(i){
   } else if(L && L.setSliceNumber) L.setSliceNumber(i);
   $("#slicelbl").textContent = wl[i] ? `λ ${wl[i].toFixed(3)} µm (${i+1}/${wl.length})` : `slice ${i+1}`;
 }
+// SPHEREx: IRSA's spherex_allsky_cube served by our backend as a 2D image HiPS (its PNG tiles);
+// see /hips/spherex in server.py for why Aladin cannot show the cube directly.
+const surveyURL = (v) => v === "spherex2d" ? (API || location.origin) + "/hips/spherex" : v;
 $("#survey").onchange = async (e) => {
   if(!aladin) return;
-  aladin.setImageSurvey(e.target.value);
+  aladin.setImageSurvey(surveyURL(e.target.value));
   const cube = e.target.value === CUBE;
   $("#cubectl").hidden = !cube;
   if(cube){ const wl = await cubeWavelengths(); if(wl.length) $("#slice").max = wl.length - 1; showSlice(+$("#slice").value); }
@@ -497,6 +522,7 @@ async function search(){
   const tgt = {ra, dec, size, pmra:+$("#pmra").value || 0, pmdec:+$("#pmdec").value || 0, epoch:+$("#epoch").value};
   const now = shiftTo(tgt, 2025.9);  // SPHEREx survey epoch: where the archive search and the map look
   mapShow(now.ra, now.dec, size);
+  state.target = tgt; gaiaLayer();
   try{ mtClear(); if(tgt.pmra || tgt.pmdec) motionTrack().catch(e => console.error("motion track:", e)); }catch(e){ console.error(e); }  // parallel to the archive search; never blocks it
   stopAll();
   const run = ++state.run;

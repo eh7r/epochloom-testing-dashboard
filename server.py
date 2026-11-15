@@ -26,7 +26,7 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from astrometry import propagate
@@ -562,6 +562,49 @@ def catalog_ep(
     except catalogs.CatalogError as e:
         raise HTTPException(502, str(e))
     return {"catalog": catalogs.LABEL[catalog], "table": catalog, "radius_arcsec": radius, "rows": rows[:3000]}
+
+
+# --------------------------------------------------------------------------
+# SPHEREx HiPS for the sky map. IRSA's only SPHEREx HiPS (hips/list) is
+# SPHEREx/spherex_allsky_cube: its cube slices exist only as FITS tiles
+# (custom_tile_format = fits-cube), but it also has 2D PNG tiles (NpixN.png,
+# Allsky.png). Aladin sees dataproduct_type=cube and asks for PNG slices
+# (NpixN_k.png) that do not exist, so the map stays empty. Serving the same
+# properties as a 2D image HiPS makes Aladin use the PNG tiles, which are
+# redirected to IRSA (nothing is copied or modified).
+# --------------------------------------------------------------------------
+SPHEREX_HIPS = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube"
+_HIPS_TILE = re.compile(r"Norder\d{1,2}/(Dir\d+/Npix\d+|Allsky)\.png")
+_hips_props = None
+
+
+@app.get("/hips/spherex/properties", response_class=PlainTextResponse)
+def hips_props():
+    global _hips_props
+    if _hips_props is None:
+        import requests
+        r = requests.get(SPHEREX_HIPS + "/properties", timeout=30)
+        r.raise_for_status()
+        keep = []
+        for line in r.text.splitlines():
+            k = line.split("=", 1)[0].strip()
+            if k.startswith(("hips_cube", "data_cube", "custom_tile", "dataproduct_type")):
+                continue
+            if k == "hips_service_url":
+                continue
+            if k == "obs_title":
+                line = "obs_title = SPHEREx DR1 all-sky (IRSA PNG preview tiles of spherex_allsky_cube)"
+            keep.append(line)
+        keep.append("dataproduct_type = image")
+        _hips_props = "\n".join(keep) + "\n"
+    return _hips_props
+
+
+@app.get("/hips/spherex/{path:path}")
+def hips_tile(path: str):
+    if not _HIPS_TILE.fullmatch(path):
+        raise HTTPException(404, "not a SPHEREx HiPS PNG tile")
+    return RedirectResponse(f"{SPHEREX_HIPS}/{path}", status_code=302)
 
 
 @app.get("/health")
