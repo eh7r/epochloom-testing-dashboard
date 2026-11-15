@@ -95,6 +95,21 @@ def _trim_cache() -> None:
             break
 
 service = pyvo.dal.TAPService(TAP_URL)
+TAP_TIMEOUT = float(os.environ.get("SPHEREX_TAP_TIMEOUT", "40"))
+
+
+def tap_query(adql: str, timeout: float = TAP_TIMEOUT):
+    """Synchronous IRSA TAP query with a hard timeout (pyvo has none, so a dead
+    IRSA used to hang /observations forever instead of falling back to cache)."""
+    import io
+
+    import requests
+    from astropy.io.votable import parse_single_table
+
+    r = requests.post(f"{TAP_URL}/sync", data={"QUERY": adql, "LANG": "ADQL", "REQUEST": "doQuery",
+                                               "FORMAT": "votable"}, timeout=timeout)
+    r.raise_for_status()
+    return parse_single_table(io.BytesIO(r.content)).to_table()
 
 
 # --------------------------------------------------------------------------
@@ -118,9 +133,9 @@ def observations(
     """
     cache = CACHE / ("obs_" + hashlib.sha1(f"{ra:.6f}|{dec:.6f}|{limit}".encode()).hexdigest() + ".json")
     last = None
-    for attempt in range(3):
+    for attempt in range(1 if cache.exists() else 3):  # cached answer: don't make the user wait for retries
         try:
-            table = service.run_sync(q).to_table()
+            table = tap_query(q)
             rows = [
                 {
                     "url": str(r["url"]),
