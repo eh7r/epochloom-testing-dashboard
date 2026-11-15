@@ -416,6 +416,33 @@ def astrometry_ep(target: str | None = Query(None, description="one of: " + ", "
     return out
 
 
+@app.get("/motion")
+def motion_ep(
+    target: str | None = Query(None, description="demo target key (see /astrometry); or give ra/dec/pm/epoch"),
+    ra: float | None = Query(None, ge=0, le=360),
+    dec: float | None = Query(None, ge=-90, le=90),
+    pmra: float = Query(0.0, ge=-20000, le=20000),
+    pmdec: float = Query(0.0, ge=-20000, le=20000),
+    epoch: float = Query(2016.0, ge=1900, le=2100),
+    parallax: float | None = Query(None, ge=0, le=1000),
+):
+    """Motion track: observed catalog positions (2MASS, AllWISE, CatWISE2020, Gaia DR3), each matched
+    at the reference position propagated to that survey's epoch, plus the computed yearly path."""
+    if target:
+        if target not in catalogs.TARGETS:
+            raise HTTPException(404, "unknown target; known: " + ", ".join(catalogs.TARGETS))
+        try:
+            ref = catalogs.astrometry(target)
+        except catalogs.CatalogError as e:
+            raise HTTPException(502, str(e))
+    elif ra is not None and dec is not None:
+        ref = {"ra": ra, "dec": dec, "ref_epoch": epoch, "pmra": pmra, "pmdec": pmdec, "parallax": parallax,
+               "catalog": "user input (not catalog-verified)", "source_table": None, "source_id": None}
+    else:
+        raise HTTPException(422, "give target, or ra and dec")
+    return catalogs.motion(ref)
+
+
 @app.get("/catalog")
 def catalog_ep(
     catalog: str = Query("gaia_dr3_source", description="gaia_dr3_source | catwise_2020 | allwise_p3as_psd | fp_psc"),

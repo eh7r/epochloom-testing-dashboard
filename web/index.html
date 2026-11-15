@@ -169,6 +169,20 @@ th:first-child,td:first-child{text-align:left}
     </div>
     <div id="aladin"></div>
   </div>
+  <div class="panel" style="margin-bottom:18px">
+    <div class="maphead">
+      <h2 style="margin:0">Motion track · catalog epochs</h2>
+      <button id="mtgo">Show motion track</button>
+      <span id="mtmsg" class="hint" style="margin:0"></span>
+    </div>
+    <div class="legend" style="margin-top:0">
+      <span><svg width="34" height="10" style="vertical-align:-1px;margin-right:5px"><line x1="0" y1="5" x2="22" y2="5" stroke="#4ade80" stroke-width="2"/><circle cx="28" cy="5" r="4" fill="#4ade80"/></svg>observed (catalog row: 2MASS, AllWISE, CatWISE2020, Gaia DR3)</span>
+      <span><svg width="34" height="10" style="vertical-align:-1px;margin-right:5px"><line x1="0" y1="5" x2="22" y2="5" stroke="#fbbf24" stroke-width="2" stroke-dasharray="4 3"/><circle cx="28" cy="5" r="3.5" fill="none" stroke="#fbbf24" stroke-width="1.5"/></svg>computed (propagated yearly from the reference epoch to today)</span>
+    </div>
+    <div id="mtpm" class="info"></div>
+    <div style="overflow:auto;max-height:260px"><table id="mttbl"></table></div>
+    <div class="hint">Click a row to centre the map there. The yearly parallax wobble (&lt; 1″) is far below SPHEREx's ~6″ pixel, so it is not visible and not drawn. RW Aur and R Dra move only ~0.02–0.03″/yr: their path is essentially a point; they are variability targets.</div>
+  </div>
   <div class="stats">
     <div class="stat"><span>Images</span><b id="s-n">–</b></div>
     <div class="stat"><span>Bands</span><b id="s-b">–</b></div>
@@ -316,6 +330,15 @@ function mapInit(){
                                   cooFrame:"ICRS", showFullscreenControl:true, showCooGridControl:true});
     aOvl = A.graphicOverlay({color:"#6ee7ff", lineWidth:2}); aladin.addOverlay(aOvl);
     aCat = A.catalog({name:"target", sourceSize:20, color:"#ff4fd8", shape:"cross"}); aladin.addCatalog(aCat);
+    // motion track layers: dashed computed path, solid observed path, markers, year labels.
+    // Guarded: a failure here must never stop the base map from showing the target.
+    try{
+      mt.cmpLine = A.graphicOverlay({name:"computed path", color:"#fbbf24", lineWidth:2, lineDash:[6,5]}); aladin.addOverlay(mt.cmpLine);
+      mt.cmpPts  = A.graphicOverlay({name:"computed points", color:"#fbbf24", lineWidth:1.5}); aladin.addOverlay(mt.cmpPts);
+      mt.obsLine = A.graphicOverlay({name:"observed path", color:"#4ade80", lineWidth:2.5}); aladin.addOverlay(mt.obsLine);
+      mt.labels  = A.catalog({name:"epochs", sourceSize:6, color:"#e7ecf766", shape:"circle", displayLabel:true,
+                              labelColumn:"label", labelColor:"#e7ecf7", labelFont:"12px system-ui"}); aladin.addCatalog(mt.labels);
+    }catch(e){ console.error("motion-track layers unavailable:", e); mt.broken = true; }
     mapShow(+$("#ra").value, +$("#dec").value, +$("#size").value);
   });
 }
@@ -328,6 +351,69 @@ function mapShow(ra, dec, size){
   const h = size / 2, dr = h / Math.max(0.05, Math.cos(dec * Math.PI / 180));
   aOvl.add(A.polygon([[ra-dr,dec-h],[ra+dr,dec-h],[ra+dr,dec+h],[ra-dr,dec+h]]));
 }
+/* ---------- motion track (/motion: catalog epochs + computed path) ---------- */
+const mt = {};
+const jyDate = (jy) => new Date(Date.UTC(2000,0,1,12) + (jy - 2000) * 365.25 * 864e5);  // Julian year -> date
+function mtClear(){ ["cmpLine","cmpPts","obsLine","labels"].forEach(k => { try{ mt[k] && mt[k].removeAll(); }catch(e){ console.error(e); } }); $("#mttbl").innerHTML = ""; $("#mtpm").textContent = ""; $("#mtmsg").textContent = ""; }
+async function motionTrack(){
+  const opt = $("#preset").selectedOptions[0], key = opt && opt.dataset.target && ASTRO[opt.dataset.target] ? opt.dataset.target : null;
+  const ra = +$("#ra").value, dec = +$("#dec").value, pmra = +$("#pmra").value || 0, pmdec = +$("#pmdec").value || 0, epoch = +$("#epoch").value;
+  if(!key && !(pmra || pmdec)) return toast("Pick a catalog preset or enter a proper motion first.");
+  const url = key ? `${API}/motion?target=${key}` : `${API}/motion?ra=${ra}&dec=${dec}&pmra=${pmra}&pmdec=${pmdec}&epoch=${epoch}`;
+  mtClear(); $("#mtmsg").textContent = "querying IRSA catalogs…"; $("#mtgo").disabled = true;
+  let m;
+  try{ m = await getJSON(url); }catch(e){ $("#mtmsg").textContent = ""; $("#mtgo").disabled = false; return toast("Motion track failed: " + e.message); }
+  $("#mtgo").disabled = false;
+  mt.data = m; fillMotionTable(m);
+  // drawing is guarded: the table stays usable and the base map untouched if a layer fails
+  try{ if(mt.broken || !mt.cmpLine) throw new Error("track layers not available"); drawMotion(m); }
+  catch(e){ console.error("motion-track drawing failed:", e); $("#mtmsg").textContent += " · map overlay unavailable (table only)"; }
+}
+function drawMotion(m){
+  if(!aladin) return;
+  const obs = m.observed, cmp = m.computed, all = obs.concat(cmp);
+  // size markers and the view from the path's extent
+  const dec0 = cmp[0].dec, cosd = Math.cos(dec0 * Math.PI / 180);
+  const ras = all.map(p => p.ra), decs = all.map(p => p.dec);
+  const ext = Math.max((Math.max(...ras) - Math.min(...ras)) * cosd, Math.max(...decs) - Math.min(...decs));  // deg
+  const r = Math.max(0.6 / 3600, ext / 70);
+  if(cmp.length > 1) mt.cmpLine.add(A.polyline(cmp.map(p => [p.ra, p.dec])));
+  cmp.forEach(p => mt.cmpPts.add(A.circle(p.ra, p.dec, r * 0.8, {color:"#fbbf24", lineWidth:1.5})));
+  if(obs.length > 1) mt.obsLine.add(A.polyline(obs.map(p => [p.ra, p.dec])));
+  obs.forEach(p => mt.obsLine.add(A.circle(p.ra, p.dec, r, {color:"#4ade80", fillColor:"#4ade80"})));
+  // labels: every observed point (survey + year); computed: first, every 5th year, today
+  // one label per observed year (e.g. "AllWISE+CatWISE2020 2010"), so same-year points don't overprint
+  const byYear = {};
+  obs.forEach(p => { const y = p.date.slice(0,4); (byYear[y] ||= {p, names:[]}).names.push(p.survey.replace(" PSC","")); });
+  const lab = Object.entries(byYear).map(([y, g]) => A.source(g.p.ra, g.p.dec, {label:` ${[...new Set(g.names)].join("+")} ${y}`}));
+  cmp.forEach((p, i) => { const y = Math.floor(p.jyear);
+    if(!p.today && byYear[String(y)]) return;  // already labelled by an observed point
+    if(i === 0 || p.today || y % 5 === 0) lab.push(A.source(p.ra, p.dec, {label:` ${p.today ? "today" : y}`})); });
+  mt.labels.addSources(lab);
+  const c = cmp.concat(obs), mra = (Math.max(...ras) + Math.min(...ras)) / 2, mdec = (Math.max(...decs) + Math.min(...decs)) / 2;
+  aladin.gotoRaDec(mra, mdec); aladin.setFoV(Math.max(40 / 3600, ext * 2.2));
+}
+function fillMotionTable(m){
+  const f = (v, n) => v == null ? "–" : (+v).toFixed(n), ref = m.ref;
+  $("#mtpm").innerHTML = `pmRA* ${f(ref.pmra,1)} · pmDec ${f(ref.pmdec,1)} mas/yr · total ${f(m.pm_total_arcsec_per_yr,3)}″/yr · parallax ${ref.parallax == null ? "n/a" : f(ref.parallax,2) + " mas"}` +
+    ` · reference: ${esc(ref.catalog || "")}${ref.source_id ? " " + esc(ref.source_id) : ""} @ ${f(ref.ref_epoch,3)}`;
+  const rows = m.observed.map(p => ({...p, d:p.date, src:`${p.survey} ${p.id}`, k:"observed"}))
+    .concat(m.computed.map(p => ({...p, d:jyDate(p.jyear).toISOString().slice(0,10), src: p.today ? "propagated (today)" : "propagated", k:"computed"})))
+    .sort((a,b) => a.jyear - b.jyear);
+  mt.rows = rows;
+  $("#mttbl").innerHTML = "<tr><th>date</th><th>RA (deg)</th><th>Dec (deg)</th><th>source</th><th>type</th></tr>" +
+    rows.map((p,i) => `<tr data-i="${i}" style="cursor:pointer"><td>${p.d}</td><td>${p.ra.toFixed(6)}</td><td>${p.dec.toFixed(6)}</td><td>${esc(p.src)}</td>` +
+      `<td style="color:${p.k === "observed" ? "#4ade80" : "#fbbf24"}">${p.k}</td></tr>`).join("") +
+    m.not_found.map(n => `<tr><td>–</td><td>–</td><td>–</td><td class="err">${esc(n.reason)}</td><td>no point</td></tr>`).join("");
+  $("#mtmsg").textContent = `${m.observed.length} observed · ${m.computed.length} computed` + (m.not_found.length ? ` · ${m.not_found.length} survey(s) without a match` : "");
+}
+$("#mttbl").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-i]"); if(!tr || !aladin) return;
+  const p = mt.rows[+tr.dataset.i]; try{ aladin.gotoRaDec(p.ra, p.dec); }catch(e){ console.error(e); }
+  [...$("#mttbl").rows].forEach(r => r.style.background = r === tr ? "#1d6f8740" : "");
+});
+$("#mtgo").onclick = motionTrack;
+
 // SPHEREx DR1 all-sky cube on IRSA: 102 wavelength slices, 0.75-5 um. The slider picks the slice.
 const CUBE = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube";
 let cubeWl = null;
@@ -379,6 +465,7 @@ async function search(){
   const tgt = {ra, dec, size, pmra:+$("#pmra").value || 0, pmdec:+$("#pmdec").value || 0, epoch:+$("#epoch").value};
   const now = shiftTo(tgt, 2025.9);  // SPHEREx survey epoch: where the archive search and the map look
   mapShow(now.ra, now.dec, size);
+  try{ mtClear(); if(tgt.pmra || tgt.pmdec) motionTrack().catch(e => console.error("motion track:", e)); }catch(e){ console.error(e); }  // parallel to the archive search; never blocks it
   stopAll();
   const run = ++state.run;
   state.obs.forEach(o => { o.blob && URL.revokeObjectURL(o.blob); o.blobShared && URL.revokeObjectURL(o.blobShared); });

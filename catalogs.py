@@ -186,3 +186,83 @@ def astrometry(key):
                                   "source_name": r["source_name"]} for r in cand[1:]]
         return out
     raise CatalogError(f"{t['name']}: " + "; ".join(notes))
+
+
+# --------------------------------------------------------------------------
+# Motion track: where the catalogs actually saw the object, and where it is predicted.
+# --------------------------------------------------------------------------
+# (table, nominal Julian year of the survey, +- years around it the per-source epochs can be,
+#  match tolerance in arcsec at the source's own epoch)
+SURVEYS = [
+    ("fp_psc", 1999.3, 2.2, 2.0),            # 2MASS: 1997-2001, per-source xdate
+    ("allwise_p3as_psd", 2010.55, 0.8, 3.0), # AllWISE: 2010-2011, per-source w1mjdmean
+    ("catwise_2020", 2015.4, 4.5, 3.0),      # CatWISE2020: 2010-2018 data, per-source meanobsmjd
+    ("gaia_dr3_source", 2016.0, 0.0, 1.0),   # Gaia DR3: positions at ref_epoch 2016.0
+]
+
+
+def motion(ref, today_jyear=None):
+    """ref: dict with ra, dec, ref_epoch (jyear), pmra, pmdec (mas/yr), parallax (mas or None).
+    For each survey: propagate the reference to the survey epoch (apply_space_motion), cone-search
+    there, then keep rows whose own epoch's predicted position is within the tolerance."""
+    from astropy.coordinates import SkyCoord
+    from astropy.time import Time as _T
+
+    from astrometry import propagate
+
+    today = today_jyear or float(_T.now().jyear)
+    ra0, dec0, ep = ref["ra"], ref["dec"], ref["ref_epoch"]
+    pma, pmd, plx = ref.get("pmra") or 0.0, ref.get("pmdec") or 0.0, ref.get("parallax")
+    pmtot = float(np.hypot(pma, pmd)) / 1000.0  # arcsec/yr
+    at = lambda jy=None, mjd=None: propagate(ra0, dec0, pma, pmd, ep, mjd=mjd, jyear=jy, parallax=plx)
+
+    observed, missing = [], []
+    for table, jy, span, tol in SURVEYS:
+        pra, pdec = at(jy=jy)
+        radius = tol + pmtot * span + 2.0
+        try:
+            rows = cone(table, pra, pdec, radius)
+        except CatalogError as e:
+            missing.append({"survey": LABEL[table], "table": table, "reason": f"query failed: {e}"})
+            continue
+        hits = []
+        for r in rows:
+            rjy, rmjd, note = epoch_of(table, r)
+            if rjy is None:
+                continue
+            era, edec = at(mjd=rmjd)
+            sep = SkyCoord(r["ra"], r["dec"], unit="deg").separation(SkyCoord(era, edec, unit="deg")).arcsec
+            if sep <= tol:
+                hits.append((sep, r, rjy, rmjd, note))
+        if not hits:
+            missing.append({"survey": LABEL[table], "table": table, "searched_ra": pra, "searched_dec": pdec,
+                            "epoch": jy, "radius_arcsec": round(radius, 1), "tolerance_arcsec": tol,
+                            "reason": f"not found in {LABEL[table]}"})
+            continue
+        # Fast movers can appear more than once in CatWISE2020 (different mean epochs): keep all;
+        # elsewhere keep the closest match.
+        hits.sort(key=lambda h: h[0])
+        for sep, r, rjy, rmjd, note in (hits if table == "catwise_2020" else hits[:1]):
+            observed.append({
+                "survey": LABEL[table], "table": table,
+                "id": str(r.get("source_id") or r.get("designation") or r.get("source_name")),
+                "ra": r["ra"], "dec": r["dec"], "jyear": rjy, "mjd": rmjd,
+                "date": _T(rmjd, format="mjd").iso[:10], "epoch_note": note,
+                "offset_from_prediction_arcsec": round(sep, 3), "kind": "observed",
+            })
+    observed.sort(key=lambda o: o["jyear"])
+
+    computed = []
+    y = ep
+    while y <= today + 1e-9:
+        cra, cdec = at(jy=y)
+        computed.append({"jyear": round(y, 4), "ra": cra, "dec": cdec, "kind": "computed"})
+        y = float(np.floor(y) + 1)  # ref epoch, then every 1 Jan (Julian year)
+    tra, tdec = at(jy=today)
+    computed.append({"jyear": round(today, 4), "ra": tra, "dec": tdec, "kind": "computed", "today": True})
+    return {
+        "ref": ref, "observed": observed, "not_found": missing, "computed": computed,
+        "pm_total_arcsec_per_yr": pmtot,
+        "method": "astropy SkyCoord.apply_space_motion from the reference row; barycentric "
+                  "(annual parallax wobble not applied, < 1\" and below SPHEREx's ~6\" pixel)",
+    }
