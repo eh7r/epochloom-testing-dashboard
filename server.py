@@ -32,6 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from astrometry import propagate
 import catalogs
 from photometry import PhotometryError, measure
+import diff as diffmod
+from pydantic import BaseModel, Field
 
 conf.remote_timeout = 120
 
@@ -64,10 +66,11 @@ app = FastAPI(title="SPHEREx Explorer")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # read-only public data, no cookies: any page may call the API
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],  # POST only for /diffstack (long frame list)
     allow_headers=["*"],
     # target pixel, own stretch, propagated position: read by the dashboard
-    expose_headers=["X-Tx", "X-Ty", "X-Nx", "X-Ny", "X-Lo", "X-Hi", "X-Ra", "X-Dec", "X-Flags"],
+    expose_headers=["X-Tx", "X-Ty", "X-Nx", "X-Ny", "X-Lo", "X-Hi", "X-Ra", "X-Dec", "X-Flags",
+                    "X-Wl", "X-RefLo", "X-RefHi", "X-NRef"],
 )
 
 # Disk cap for cache/ (bytes). Oldest files are deleted first once it is exceeded.
@@ -363,6 +366,107 @@ def cutout(
     if not png.exists():
         _render_png(img, lo, hi, png)
     return _png_response(path, png, ra, dec, lo, hi)
+
+
+# --------------------------------------------------------------------------
+# Difference imaging: frame minus the median of all frames of a band (diff.py)
+# --------------------------------------------------------------------------
+class DiffReq(BaseModel):
+    urls: list[str] = Field(..., min_length=2, max_length=300)
+    mjds: list[float] = Field(..., min_length=2, max_length=300)
+    ra: float = Field(..., ge=0, le=360)
+    dec: float = Field(..., ge=-90, le=90)
+    size: float = Field(0.1, gt=0, le=0.5)
+    pmra: float = Field(0.0, ge=-20000, le=20000)
+    pmdec: float = Field(0.0, ge=-20000, le=20000)
+    epoch: float | None = Field(None, ge=1900, le=2100)
+    tol: float = Field(0.03, ge=0.005, le=0.2, description="reference frames within +-tol of the frame's wavelength")
+
+
+MIN_REFS = 3
+_DIFF_ID = re.compile(r"[0-9a-f]{16}")
+
+
+@app.post("/diffstack")
+def diffstack(req: DiffReq):
+    """Resample every frame of a band onto one sky-fixed grid and record each frame's wavelength at
+    the target. Returns an id for /diff (which subtracts a wavelength-matched median)."""
+    if len(req.urls) != len(req.mjds):
+        raise HTTPException(422, "urls and mjds must have the same length")
+    for url in req.urls:
+        _check_url(url)
+    pos = [frame_pos(req.ra, req.dec, req.pmra, req.pmdec, req.epoch, m) for m in req.mjds]
+    gra, gdec = frame_pos(req.ra, req.dec, req.pmra, req.pmdec, req.epoch, float(np.median(req.mjds)))
+    n = max(16, int(round(req.size * 3600 / diffmod.PIX_ARCSEC)))
+    key = hashlib.sha1(json.dumps([sorted(zip(req.urls, req.mjds)), req.ra, req.dec, req.size, req.pmra,
+                                   req.pmdec, req.epoch, req.tol, "v2-lvf"]).encode()).hexdigest()[:16]
+    meta_p, cube_p = CACHE / f"diff_{key}.json", CACHE / f"diff_{key}.npy"
+    if meta_p.exists() and cube_p.exists():
+        return {k: v for k, v in json.loads(meta_p.read_text()).items() if k != "frames"} | {"id": key}
+    gw = diffmod.grid_wcs(gra, gdec, n)
+    stack, frames, wls, skipped = [], {}, [], []
+    for url, (fra, fdec) in zip(req.urls, pos):
+        try:
+            path = get_cutout_fits(url, fra, fdec, req.size)
+            stack.append(diffmod.resample(path, gw, n))
+            wls.append(diffmod.target_wavelength(path, fra, fdec))
+            frames[url] = [fra, fdec, len(stack) - 1]
+        except Exception as e:
+            skipped.append(f"{url.rsplit('/', 1)[-1]}: {e}")
+    if len(stack) < 2:
+        raise HTTPException(422, "need at least 2 usable frames")
+    cube = np.array(stack)
+    # SPHEREx is a linear variable filter: frames of one band see the target at different
+    # wavelengths. Each frame's reference = median of the OTHER frames within +-tol in wavelength.
+    refs = diffmod.references(wls, req.tol)
+    resid = []
+    with np.errstate(all="ignore"):
+        for i, r in enumerate(refs):
+            if len(r) >= MIN_REFS:
+                resid.append(cube[i] - np.nanmedian(cube[r], axis=0))
+        lim = float(np.nanpercentile(np.abs(np.array(resid)), 99.5)) if resid else 1.0
+    np.save(cube_p, cube)
+    meta = {"n_frames": len(stack), "n_subtractable": len(resid), "lim": lim or 1.0, "tol": req.tol,
+            "min_refs": MIN_REFS, "grid_n": n, "grid_ra": gra, "grid_dec": gdec, "skipped": skipped,
+            "size": req.size, "wavelengths": wls, "refs": refs, "frames": frames}
+    meta_p.write_text(json.dumps(meta))
+    return {k: v for k, v in meta.items() if k not in ("frames", "refs")} | {"id": key}
+
+
+@app.get("/diff")
+def diff_png(id: str, url: str):
+    """PNG of (frame - median of the other frames within +-tol in wavelength) on the stack's sky
+    grid, symmetric shared stretch. 422 (with the reason) when fewer than 3 such frames exist.
+    X-Tx/X-Ty: the target's (propagated) position on that grid for this frame."""
+    if not _DIFF_ID.fullmatch(id):
+        raise HTTPException(400, "bad id")
+    meta_p, cube_p = CACHE / f"diff_{id}.json", CACHE / f"diff_{id}.npy"
+    if not meta_p.exists():
+        raise HTTPException(404, "unknown stack; call /diffstack first")
+    meta = json.loads(meta_p.read_text())
+    if url not in meta["frames"]:
+        raise HTTPException(404, "frame not in this stack")
+    fra, fdec, i = meta["frames"][url]
+    wl, refs, tol = meta["wavelengths"][i], meta["refs"][i], meta["tol"]
+    if wl is None:
+        raise HTTPException(422, "no wavelength at the target for this frame; not subtracted")
+    if len(refs) < meta["min_refs"]:
+        raise HTTPException(422, f"only {len(refs)} other frame(s) within ±{tol*100:.0f}% of "
+                                 f"λ={wl:.3f} µm (need {meta['min_refs']}); not subtracted")
+    rw = [meta["wavelengths"][j] for j in refs]
+    n = meta["grid_n"]
+    gw = diffmod.grid_wcs(meta["grid_ra"], meta["grid_dec"], n)
+    png = CACHE / f"diff_{id}_{i}.png"
+    if not png.exists():
+        cube = np.load(cube_p, mmap_mode="r")
+        with np.errstate(all="ignore"):
+            res = cube[i] - np.nanmedian(cube[refs], axis=0)
+        diffmod.render(res, meta["lim"], png)
+    tx, ty = diffmod.target_pixel(gw, fra, fdec)
+    return FileResponse(png, media_type="image/png",
+                        headers={"X-Tx": f"{tx:.3f}", "X-Ty": f"{ty:.3f}", "X-Nx": str(n), "X-Ny": str(n),
+                                 "X-Ra": f"{fra:.6f}", "X-Dec": f"{fdec:.6f}", "X-Wl": f"{wl:.4f}",
+                                 "X-RefLo": f"{min(rw):.4f}", "X-RefHi": f"{max(rw):.4f}", "X-NRef": str(len(refs))})
 
 
 # --------------------------------------------------------------------------

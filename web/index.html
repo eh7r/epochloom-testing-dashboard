@@ -199,6 +199,7 @@ th:first-child,td:first-child{text-align:left}
         <label style="margin:0;display:flex;align-items:center;gap:6px">fps <input id="fps" type="range" min="1" max="8" value="2" style="width:70px"></label>
         <label style="margin:0;display:flex;align-items:center;gap:5px"><input id="ovl" type="checkbox" checked> apertures</label>
         <label style="margin:0;display:flex;align-items:center;gap:5px" title="One brightness scale for all frames of the band, so real brightness changes stay visible. Off = each frame stretched on its own."><input id="shared" type="checkbox" checked> shared stretch</label>
+        <label style="margin:0;display:flex;align-items:center;gap:5px" title="Each frame minus the median of the other frames of this band within ±3% of its wavelength at the target, on one sky-aligned grid. Moving or variable sources leave +/− residuals."><input id="diff" type="checkbox"> difference</label>
       </div>
       <div class="viewer">
         <img id="bv" alt="" hidden>
@@ -208,6 +209,7 @@ th:first-child,td:first-child{text-align:left}
       </div>
       <input id="bslide" type="range" min="0" max="0" value="0" style="margin-top:10px">
       <div id="binfo" class="info"></div>
+      <div id="diffnote" class="hint" hidden>Difference = frame − median of the other frames within ±3% of its wavelength (sky-aligned; white = brighter, black = fainter). Residuals may include wavelength differences across the band (SPHEREx LVF), not only real changes.</div>
     </div>
 
     <div class="panel">
@@ -253,7 +255,7 @@ const $ = (s) => document.querySelector(s);
 const COL = {1:"#8ab4ff",2:"#5eead4",3:"#a3e635",4:"#fbbf24",5:"#fb923c",6:"#f87171"};
 const BANDS = {1:[0.75,1.11],2:[1.11,1.64],3:[1.64,2.42],4:[2.42,3.82],5:[3.82,4.42],6:[4.42,5.0]};
 const state = {obs:[], target:null, bands:new Set([1,2,3,4,5,6]), run:0, idx:0, timer:null,
-               specStop:false, specBusy:false, sel:-1, pts:[], stretch:{}};
+               specStop:false, specBusy:false, sel:-1, pts:[], stretch:{}, diff:{}};
 
 /* ---------- helpers ---------- */
 const bandNum = (bp) => { const m = /D(\d)/.exec(bp||""); return m ? +m[1] : 0; };
@@ -284,6 +286,36 @@ function shiftTo(t, jy){
   return {ra:((t.ra + t.pmra / 3.6e6 * dt / Math.cos(t.dec * Math.PI / 180)) % 360 + 360) % 360, dec};
 }
 const blobOf = (o) => ($("#shared").checked && o.blobShared) ? o.blobShared : o.blob;
+const diffOn = () => $("#diff").checked;
+// Difference stack per band (server: /diffstack + /diff). Built once every frame of the band has loaded.
+async function ensureDiff(band){
+  const st = state.diff[band]; if(st) return;
+  const all = state.obs.filter(o => String(o.band) === String(band));
+  if(all.some(o => o.status === "loading" || o.status === "idle")) return;  // wait for frames
+  const fr = all.filter(o => o.status === "ok");
+  if(fr.length < 2){ state.diff[band] = {err:"need at least 2 frames"}; return showFrame(); }
+  const run = state.run, t = state.target; state.diff[band] = {busy:true}; showFrame();
+  try{
+    const body = {urls:fr.map(o => o.url), mjds:fr.map(o => o.time), ra:t.ra, dec:t.dec, size:t.size,
+                  pmra:t.pmra || 0, pmdec:t.pmdec || 0, epoch:isFinite(t.epoch) ? t.epoch : null};
+    const r = await fetch(`${API}/diffstack`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if(!r.ok){ let d=""; try{ d=(await r.json()).detail }catch(e){} throw new Error(d || ("HTTP "+r.status)); }
+    const meta = await r.json(); if(run !== state.run) return;
+    state.diff[band] = {busy:true, meta};
+    await pool(fr, 4, async (o) => {
+      try{
+        const d = await fetch(`${API}/diff?id=${meta.id}&url=${encodeURIComponent(o.url)}`);
+        if(!d.ok){ let m=""; try{ m=(await d.json()).detail }catch(e){} o.derr = m || ("HTTP "+d.status); return; }
+        const h = (k) => parseFloat(d.headers.get(k)), b = await d.blob(); if(run !== state.run) return;
+        o.dblob = URL.createObjectURL(b); o.derr = null;
+        o.dpos = {x:h("X-Tx"), y:h("X-Ty"), nx:h("X-Nx"), ny:h("X-Ny")};
+        o.dwl = h("X-Wl"); o.dref = {lo:h("X-RefLo"), hi:h("X-RefHi"), n:h("X-NRef")};
+      }catch(e){ o.derr = String(e.message || e); }
+      if(frames()[state.idx] === o) showFrame();
+    }, () => run === state.run);
+    if(run === state.run){ state.diff[band] = {meta}; showFrame(); }
+  }catch(e){ if(run === state.run){ state.diff[band] = {err:String(e.message || e)}; showFrame(); } }
+}
 
 /* ---------- server status ---------- */
 fetch(API + "/openapi.json").then(r => { if(!r.ok) throw 0; $("#srv").textContent="server online"; $("#srv").className="pill on"; })
@@ -469,7 +501,7 @@ async function search(){
   stopAll();
   const run = ++state.run;
   state.obs.forEach(o => { o.blob && URL.revokeObjectURL(o.blob); o.blobShared && URL.revokeObjectURL(o.blobShared); });
-  state.obs = []; state.pts = []; state.sel = -1; state.stretch = {};
+  state.obs = []; state.pts = []; state.sel = -1; state.stretch = {}; state.diff = {};
   $("#go").disabled = true; $("#go").textContent = "Querying IRSA…";
   let data;
   try{ data = await getJSON(`${API}/observations?ra=${now.ra.toFixed(6)}&dec=${now.dec.toFixed(6)}&limit=${limit}`); }
@@ -611,13 +643,26 @@ function showFrame(){
     $("#bempty").textContent = state.obs.length ? "Loading cutouts…" : "Search the archive, then frames appear here.";
     $("#binfo").textContent = ""; return;
   }
+  $("#diffnote").hidden = !diffOn();
+  if(diffOn()){
+    const ds = state.diff[f.band];
+    if(!ds) ensureDiff(f.band);
+    if(!f.dblob){  // not (yet) subtracted: say why instead of showing a frame
+      img.hidden = true; ov.toggleAttribute("hidden", true); tag.hidden = false; $("#bempty").hidden = false;
+      tag.textContent = `D${f.band} · ${fmtDate(f.date)} · difference`; $("#bslide").value = state.idx;
+      $("#bempty").textContent = f.derr ? "Not subtracted: " + f.derr : (ds && ds.err) ? "Difference failed: " + ds.err :
+        (ds && ds.busy) ? "Building the difference stack…" : "Waiting for all frames of this band to load…";
+      $("#binfo").textContent = `frame ${state.idx+1}/${fr.length} · MJD ${f.time.toFixed(4)}`; return;
+    }
+  }
   $("#bempty").hidden = true; img.hidden = false; tag.hidden = false;
-  img.src = blobOf(f); $("#bslide").value = state.idx;
+  img.src = diffOn() ? f.dblob : blobOf(f); $("#bslide").value = state.idx;
   tag.textContent = `D${f.band} · ${fmtDate(f.date)}`;
   const st = state.stretch[f.band], shared = $("#shared").checked && f.blobShared;
   const t = state.target, pm = t && (t.pmra || t.pmdec);
   $("#binfo").textContent = `frame ${state.idx+1}/${fr.length} · MJD ${f.time.toFixed(4)}` + (f.phot && f.phot.wavelength ? ` · ${f.phot.wavelength.toFixed(3)} µm` : "") +
-    (shared ? ` · shared stretch (${st.n} frames)` : " · own stretch") +
+    (diffOn() ? ` · difference: λ ${f.dwl.toFixed(3)} µm − median of ${f.dref.n} frames at ${f.dref.lo.toFixed(3)}–${f.dref.hi.toFixed(3)} µm`
+              : shared ? ` · shared stretch (${st.n} frames)` : " · own stretch") +
     (pm && f.at ? ` · centred on ${f.at.ra.toFixed(5)}, ${f.at.dec.toFixed(5)} (propagated to frame date)` : "");
   drawOverlay(f);
   state.sel = f.i; state.obs.forEach(o => $("#c"+o.i)?.classList.toggle("sel", o.i===f.i));
@@ -625,7 +670,7 @@ function showFrame(){
 function drawOverlay(f){
   // <svg> has no .hidden property (HTML elements only), so set the attribute itself.
   const ov = $("#ov"), on = $("#ovl").checked; ov.toggleAttribute("hidden", !on); if(!on) return;
-  const p = f.phot || f.pos, img = $("#bv");
+  const p = diffOn() ? f.dpos : (f.phot || f.pos), img = $("#bv");
   const nx = p ? p.nx : img.naturalWidth || 58, ny = p ? p.ny : img.naturalHeight || 58;
   const cx = p ? (p.x + .5) / nx * 100 : 50, cy = p ? 100 - (p.y + .5) / ny * 100 : 50;
   const R = (r) => (r / nx * 100).toFixed(2), ry = (r) => (r / ny * 100).toFixed(2);
@@ -635,6 +680,7 @@ function drawOverlay(f){
 }
 $("#ovl").onchange = () => showFrame();
 $("#shared").onchange = () => { state.obs.forEach(paintCard); showFrame(); };
+$("#diff").onchange = () => showFrame();
 ["rap","rin","rout"].forEach(id => $("#"+id).addEventListener("change", showFrame));
 $("#bband").onchange = () => { state.idx = 0; refreshBlink(); };
 $("#bslide").oninput = (e) => { state.idx = +e.target.value; showFrame(); };
