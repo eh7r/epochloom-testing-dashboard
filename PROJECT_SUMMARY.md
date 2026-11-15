@@ -1,26 +1,25 @@
 # SPHEREx Explorer: ملخص المشروع الكامل
 
-> آخر تحديث: السبت 14 نوفمبر 2026، الساعة 15:45 (توقيت الرياض). وقفنا هنا وبنكمل في البيت، شوف **القسم 0**.
+> آخر تحديث: الأحد 15 نوفمبر 2026 (يوم التحكيم). شوف **القسم 0**.
 
 ---
 
 ## 0. وين وقفنا (اقرأ هذا أول)
 
-**آخر شي سويناه:** نزّلنا Aladin Lite **3.9.2-beta** في `web/vendor/aladin-next.js` (2,616,595B). **للحين ما جربناه.** والغرض منه نشوف إذا يرسم طبقة SPHEREx الـ cube.
+**آخر تحديث: الأحد 15 نوفمبر 2026، يوم التحكيم.** الشغل على فرع `judging-features` (ما انرفع push).
 
-**الشغل اللي بعد آخر commit (`5b5de38`)، محفوظ على القرص بس مو في git:**
-1. **AWS صار المصدر الأول** (`SPHEREX_SOURCES` الافتراضي صار `s3,irsa`)، و`_from_s3` يستخدم `try: h[name]` بدل `name in h` عشان ما يسوي طلبات S3 زيادة. ✅ مختبر: كل الفريمات جات من `aws-s3`.
-2. **طبقة SPHEREx DR1 cube** في الخريطة: خيار "SPHEREx DR1 (102 λ)"، و slider فيه 102 طول موجي (من ملف `properties`)، وتصحيح للشريحة بـ `setFrequency`. ⚠️ الـ tiles تتحمل والشريحة صحيحة (`_40`)، **بس Aladin 3.8.2 ما يرسمها** (الخريطة فاضية).
+**وش انضاف اليوم (كله مختبر بتشغيل فعلي):**
+1. **TAP بـ timeout:** IRSA TAP كان طايح (502) طول الجلسة. `/observations` صار يرجع للكاش بعد 15 إلى 40 ثانية بدل ما يعلّق، ويقبل أقرب بحث محفوظ في حدود 0.1°.
+2. **منع الـ right-click في Aladin** (brightness/contrast). الـ pan والـ zoom والضغط شغالين.
+3. **`/astrometry`:** الـ presets الخمسة تجي من IRSA (عن طريق Gator، لأن TAP طايح): Barnard و RW Aur A و R Dra و ε Indi B من **Gaia DR3** (ε Indi B موجود في Gaia DR3: parallax 270.7 mas)، و WISE 0855 من **CatWISE2020**. موقع R Dra صار من Gaia بدل "من الذاكرة".
+4. **Timelapse علمي:** stretch مشترك لكل باند (بعد طرح median الخلفية لأن الـ zodi مو مطروح)، وكل فريم متمركز على موقع الهدف عند تاريخه (proper motion عن طريق `apply_space_motion`).
+5. **Motion track:** 2MASS و AllWISE و CatWISE2020 و Gaia DR3، وكل مسح يتطابق عند تاريخه هو. خط متصل للمرصود، ومتقطع للمحسوب، وجدول تحت الخريطة. Barnard: 10.39″/سنة.
+6. **Difference imaging:** كل فريم ناقص median الفريمات الثانية اللي طولها الموجي في حدود ±3% منه (بسبب الـ LVF). ولو أقل من 3 فريمات، يقول السبب وما يطرح.
+7. **الخريطة:** طبقة SPHEREx DR1 **صارت تنرسم** (السيرفر يقدّم الـ cube حق IRSA كصورة 2D من الـ PNG tiles حقته)، وطبقة Gaia DR3.
+8. **Quick wins:** زر WiseView، و badge للـ flags قرب الهدف على كل فريم، وسطر يوضح إن الطيف بالطول الموجي لكل بكسل (102 قناة).
 
-**الخطوة الجاية في البيت:**
-1. شغّل السيرفر، وجرب `aladin-next.js` بدل `aladin.js`. يكفي تغير السطر `import("./vendor/aladin.js")` في `web/index.html` لـ `aladin-next.js`، وبعدين اختار SPHEREx في الخريطة.
-2. لو رسم الـ cube: اعتمد 3.9.2-beta، وحدّث الرخصة والنسخة في الـ README.
-3. لو ما رسمه: أخفِ خيار SPHEREx من القائمة قبل العرض، واحذف `aladin-next.js`.
-4. بعدها commit، وpush على الريبوين.
+**`web/vendor/aladin-next.js` (3.9.2-beta):** جربناه، وما رسم الـ cube بعد. ما نحتاجه، ولا هو في git. احذفه لو تبي.
 
-**تنبيه:** لو عدلت `server.py` و uvicorn شغّال بـ `--reload`، ممكن يعلق على `Waiting for background tasks to complete`. الحل: `Ctrl+C` ثم شغّله من جديد.
-
-**ريبوهات GitHub:** `origin` = `eh7r/spherex-explorer` (public)، و `loom` = `eh7r/test-loom-1`. وفرع `main` يتبع `loom`، فعشان ترفع على الاثنين: `git push loom main && git push origin main`.
 > الفريق: **EpochLoom** · NASA Space Apps Challenge 2026 · KFUPM الظهران (14 و 15 نوفمبر)
 > التحدي: **Planet X and SPHEREx**
 
@@ -90,15 +89,19 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 
 | Endpoint | وش يرجّع |
 |---|---|
-| `GET /observations?ra=&dec=&limit=` | الصور اللي تغطي الموقع (IRSA TAP، والحد الأقصى 200) |
-| `GET /cutout?url=&ra=&dec=&size=` | صورة PNG، وموقع الهدف في الهيدرات `X-Tx` و `X-Ty` و `X-Nx` و `X-Ny` |
-| `GET /photometry?url=&ra=&dec=&size=&r_ap=&r_in=&r_out=` | `flux_uJy` و `err_uJy` و `snr` و `wavelength` و `warnings` و `x` و `y` |
-| `GET /health` | `{"ok":true,"sources":["irsa","s3"]}` |
-| `GET /docs` | توثيق تفاعلي |
+| `GET /observations?ra=&dec=&limit=` | الصور اللي تغطي الموقع (IRSA TAP). ولو TAP طايح: الكاش، أو أقرب بحث محفوظ في حدود 0.1° |
+| `GET /cutout?url=&ra=&dec=&size=[&pmra=&pmdec=&epoch=&mjd=][&lo=&hi=]` | PNG بعد طرح الخلفية. الهيدرات: `X-Tx/Ty/Nx/Ny` (بكسل الهدف)، `X-Lo/Hi` (الـ stretch حق الفريم)، `X-Ra/Dec` (الموقع المستخدم)، `X-Flags` (الـ flags في حدود 3 px من الهدف) |
+| `GET /photometry?...[&pmra=&pmdec=&epoch=&mjd=]` | `flux_uJy` و `err_uJy` و `snr` و `wavelength` و `warnings`... |
+| `GET /astrometry[?target=]` | `ra, dec, ref_epoch, pmra, pmdec, parallax, source_table, source_id`، وقاعدة الاختيار. الأهداف: `barnard, rwaur, rdra, epsindib, wise0855` |
+| `GET /catalog?catalog=&ra=&dec=&radius=` | cone search في `gaia_dr3_source` أو `catwise_2020` أو `allwise_p3as_psd` أو `fp_psc` (2MASS) |
+| `GET /motion?target=` أو `?ra=&dec=&pmra=&pmdec=&epoch=` | `observed` (لكل مسح) و `not_found` و `computed` (كل سنة لين اليوم) |
+| `POST /diffstack` ثم `GET /diff?id=&url=` | صورة الفرق. وإذا أقل من 3 فريمات في حدود ±3% من λ يرجع 422 مع السبب. الهيدرات: `X-Wl` و `X-RefLo/Hi` و `X-NRef` |
+| `GET /hips/spherex/...` | properties الـ SPHEREx HiPS بصيغة 2D، والـ tiles redirect لـ IRSA |
+| `GET /health` و `GET /docs` | |
 
-**متغيرات البيئة:** `SPHEREX_SOURCES` (الافتراضي `irsa,s3`)، و `SPHEREX_S3_BASE`، و `SPHEREX_CACHE_MAX_GB` (الافتراضي 2).
+**متغيرات البيئة:** `SPHEREX_SOURCES` (الافتراضي `s3,irsa`)، و `SPHEREX_S3_BASE`، و `SPHEREX_CACHE_MAX_GB` (2)، و `SPHEREX_TAP_TIMEOUT` (40).
 
----
+**الملفات الجديدة:** `astrometry.py` (propagation)، و `catalogs.py` (Gator والأهداف والـ motion track)، و `diff.py` (الـ resampling والطرح).
 
 ## 5. وش اشتغل اليوم (14 نوفمبر)
 
@@ -133,22 +136,19 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 
 ---
 
-## 7. نتايج اختبار الأهداف (على جهاز يزيد)
+## 7. الأهداف: الأرقام من IRSA (Gaia DR3 / CatWISE2020)، تاريخ الاستعلام 15 نوفمبر 2026
 
-المواقع **محسوبة** لسنة 2025.6 من J2000 + الـ proper motion (مو مأخوذة من مصدر جاهز):
+| الهدف | الكتالوج | source_id | RA | Dec | Epoch | pmRA* | pmDec (mas/yr) | parallax (mas) |
+|---|---|---|---|---|---|---|---|---|
+| Barnard's Star | Gaia DR3 | 4472832130942575872 | 269.4485025 | +4.7394201 | 2016.0 | −801.551 | 10362.394 | 546.976 |
+| RW Aurigae A | Gaia DR3 | 156430822114424576 | 76.9560812 | +30.4012046 | 2016.0 | 2.641 | −27.398 | 6.406 |
+| R Draconis | Gaia DR3 | 1648328016354496384 | 248.1673784 | +66.7550067 | 2016.0 | −20.643 | 6.149 | 1.251 |
+| ε Indi Ba/Bb | Gaia DR3 | 6412596012146801152 | 331.0764526 | −56.7938121 | 2016.0 | 3981.977 | −2466.832 | 270.658 |
+| WISE 0855−0714 | CatWISE2020 | 1342m076_b0-058037 | 133.7831722 | −7.2442516 | 2015.863 (meanobsmjd) | −8021.2 | 1035.7 | — |
 
-| الهدف | RA | Dec | الحركة | صور الأرشيف | النتيجة |
-|---|---|---|---|---|---|
-| RW Aurigae A | 76.956108 | +30.401151 | أقل من 1″ | أكثر من 200 | ✅ طيف: D1 و D2 و D3 بـ S/N بين 228 و 321، وبعض الفريمات saturated |
-| Barnard's Star | 269.446357 | +4.767053 | ≈266″ | أكثر من 200 | ⚠️ كل الفريمات **saturated** (حقيقي)، وهذا يأكد إن الموقع صحيح |
-| ε Indi Ba/Bb | 331.096267 | −56.801090 | ≈123″ | أكثر من 200 | ✅ 11 من 12 من AWS. طيف قزم بني من نوع T: يقمم عند 1.6 µm (40,490 µJy)، وينزل عند 2.6 µm (8,823)، ويطلع عند 4.4 µm (29,715). وقيمة J (28,062 µJy عند 1.217 µm) تطابق 2MASS (J=11.91) |
-| WISE 0855−0714 | 133.760417 | −7.242292 | ≈124″ | أكثر من 200 | ❓ ما انعاد. متوقع يكون خافت جدًا، وفرصته في D5 و D6 بس |
-| R Draconis | 248.1675 | +66.755 | | أكثر من 200 | ❓ ما انختبر، **والموقع من الذاكرة مو من مصدر** |
-| النجم التجريبي | 304.69253 | +42.45383 | | 24 | ✅ فريمات وblink شغالة |
-
-**S3 fallback على ملفات حقيقية: ✅ مثبت.** 4 cutouts حقت Barnard جات من AWS (`CUTSRC='aws-s3'`)، وفيها IMAGE و FLAGS و VARIANCE و ZODI، و`WAVETGT` صحيح (1.09 µm، و 2.31 لين 2.44 µm).
-
----
+**ملاحظات:** وحدة الـ pm في CatWISE2020 هي arcsec/yr، وحولناها لـ mas/yr. وفيه WISE 0855 له أكثر من صف في CatWISE لأنه سريع، والقاعدة تختار الصف اللي uncertainty حقه أقل.
+**Motion track:** Barnard من 2MASS (2000) لين Gaia (2016) = 10.33″/سنة، والفروقات أقل من 0.6″. WISE 0855: "not found" في 2MASS و Gaia (طبيعي). R Dra: ما انلقى في CatWISE (ساطع مرة). RW Aur: في 2MASS الفرق 1.1″ لأن A و B (بينهم 1.4″) طلعوا نجم واحد.
+**الطيف (قديم، من 14 نوفمبر):** RW Aur A: D1 و D2 و D3 بـ S/N بين 228 و 321. Barnard: saturated. ε Indi B: طيف T dwarf.
 
 ## 8. وش للحين ما تأكدنا منه
 
@@ -164,15 +164,13 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 
 ## 9. المشاكل والحدود المعروفة
 
-- **بطء:** كل فريم ياخذ من 15 لين 60 ثانية من IRSA أول مرة، وبعدها من الكاش على طول. الداشبورد يطلب 3 بالتوازي.
-- **IRSA يرجّع 503 كثير.** عندنا circuit breaker يتجاوز IRSA 45 ثانية بعد ما يفشل، وهنا الـ S3 مهم.
-- **ما فيه تصحيح للـ proper motion.** الأهداف السريعة لازم ندخل موقعها لسنة 2025 بإيدنا.
-- **الأخطاء statistical بس:** ما فيه aperture correction ولا deblending.
-- **النجوم الساطعة saturated** (flags 0 و 1 و 2 و 26) وتنرفض.
-- **أول رسم للخريطة** ياخذ حوالي 20 ثانية (كل tile حوالي 7 ثواني من IRSA).
-- **GitHub Pages ما ينفع:** صفحة HTTPS ما تقدر تكلم سيرفر HTTP على لابتوب (mixed content). لازم باك اند منشور على HTTPS.
-
----
+- **IRSA TAP طايح (502) يوم 15 نوفمبر.** الكتالوجات تشتغل عن طريق Gator. والبحث في الأرشيف يرجع للكاش بعد 15 ثانية تقريبًا، ويشتغل بس للأهداف اللي بحثنا عنها قبل (الخمسة والنجم التجريبي).
+- **الفريمات بموقع جديد** (بعد تصحيح الـ pm) تنقص من AWS أول مرة، وكل فريم ياخذ ثواني. 35 فريم = 4 دقايق تقريبًا. حمّل الهدف **قبل** العرض.
+- **Difference:** الـ PSF مو sampled كفاية (6″/px)، فالنجوم الساطعة تخلي residual (+/−). ومع فريمات قليلة (مثل النجم التجريبي) أغلب الفريمات ترفض ("only N frames within ±3%").
+- **طبقة SPHEREx في الخريطة:** هذي tiles حقت preview بصيغة PNG. الـ properties ما تقول أي طول موجي. والـ slider حق الـ 102 قناة ما يشتغل.
+- **Barnard saturated** في أغلب الفريمات، فالـ photometry ترفضها (422). وهذا طبيعي.
+- الـ parallax ما ينطبق على المسار (barycentric). أقل من 1″، وما يبين على بكسل 6″.
+- الأخطاء statistical بس. ونقطة D4 3.174 µm حقت النجم التجريبي شاذة (×20). معروفة وما انحلت.
 
 ## 10. حقائق تقنية مثبتة
 
@@ -185,25 +183,21 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 - **HiPS على IRSA:** القائمة في `https://irsa.ipac.caltech.edu/data/hips/list`. ومن ضمنها **`SPHEREx/spherex_allsky_cube`**، وهذي فكرة ممكن نحطها طبقة في الخريطة.
 - **IRSA TAP** ما يقبل طلبات مباشرة من المتصفح (CORS)، فلازم تمر عبر السيرفر.
 - **CDS** (aladin.cds و alasky و simbad) ما يوصل من شبكتنا.
+- **IRSA Gator** (`/cgi-bin/Gator/nph-query`) شغّال حتى لو TAP طايح. نفس الجداول: `gaia_dr3_source`، `catwise_2020`، `allwise_p3as_psd`، `fp_psc`.
+- **AllWISE** `ra_pm/dec_pm` عند MJD 55400.0 (2010.5589)، حسب الـ data dictionary حق IRSA.
+- **SPHEREx HiPS:** الـ cube slices موجودة FITS بس (`fits-cube`)، أما الـ PNG فهي 2D (`NpixN.png`).
+- **WiseView:** `http://byw.tools/wiseview#ra=..&dec=..` (http بس).
 
 ---
 
-## 11. الخطوات الجاية (بالترتيب)
+## 11. الخطوات الجاية
 
-1. **الرفع على GitHub:**
-   ```fish
-   cd ~/Project/spherex && git add . && git status
-   ```
-   بعدها commit، وبعدها نحدد الـ repo (للفريق ولا تحت `eh7r`)، وبعدها push.
-2. **تست كامل من الواجهة** بعد إصلاحات الأمان.
-3. **نعيد التست** على ε Indi B و WISE 0855 و R Dra (ونأكد موقع R Dra من مصدر).
-4. **تصحيح الـ proper motion تلقائيًا** (pmra و pmdec، وكل فريم بتاريخه): أهم ميزة علمية للأهداف السريعة.
-5. **centroiding لكل صورة:** لاكتشاف الأجسام المتحركة (مرشحين Planet X).
-6. **طبقة SPHEREx HiPS** في الخريطة.
-7. **مقارنة epoch** جنب بعض، وتصدير الطيف PNG.
-
----
+1. Merge فرع `judging-features` على `main` بعد العرض، وبعدها push (`git push loom main && git push origin main`).
+2. (اختياري) centroid لـ SPHEREx في كل فريم كنقاط "SPHEREx centroid" في الـ motion track.
+3. (اختياري) تصدير الـ timelapse WebM.
+4. sigma-clipping لكل باند في الطيف (عشان نقطة D4 الشاذة).
 
 ## 12. أفكار ما تنفذت
 
-Gaia cross-match، و aperture correction، و error budget كامل، والبحث بالاسم في الخريطة، ورابط WiseView لنفس الموقع.
+aperture correction، و error budget كامل، والبحث بالاسم في الخريطة، و centroid لكل فريم SPHEREx، وتصدير WebM.
+(اللي خلص اليوم: Gaia في الخريطة، ورابط WiseView، و proper motion، و difference imaging.)
