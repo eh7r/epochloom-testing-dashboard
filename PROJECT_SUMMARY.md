@@ -18,6 +18,13 @@
 7. **الخريطة:** طبقة SPHEREx DR1 **صارت تنرسم** (السيرفر يقدّم الـ cube حق IRSA كصورة 2D من الـ PNG tiles حقته)، وطبقة Gaia DR3.
 8. **Quick wins:** زر WiseView، و badge للـ flags قرب الهدف على كل فريم، وسطر يوضح إن الطيف بالطول الموجي لكل بكسل (102 قناة).
 
+9. **(اختياري) SPHEREx centroids:** زر "+ SPHEREx centroids" يضيف نقاط سماوية للـ motion track. ε Indi B: طلع 14 centroid، والوسيط يبعد 0.67″ عن موقع Gaia بعد ما نقلناه 9.3 سنة. الخطأ أقله 0.3″ (قسناه على النجم التجريبي).
+10. **(اختياري) WebM:** زر "⤓ WebM" يسجّل الـ timelapse بالوضع الحالي. جربناه بـ ffprobe: VP9، 512×512، 12 فريم.
+11. **(اختياري) بطاقة الجسم:** القيم من الكتالوج. والمسافة والسرعة المماسية مكتوب عليها "computed".
+12. **(اختياري) تلميع خفيف بالـ CSS.**
+
+**الكاش جاهز:** حمّلنا 24 فريم لكل هدف من الخمسة (Barnard و ε Indi B و RW Aur و WISE 0855 و R Dra).
+
 **`web/vendor/aladin-next.js` (3.9.2-beta):** جربناه، وما رسم الـ cube بعد. ما نحتاجه، ولا هو في git. احذفه لو تبي.
 
 > الفريق: **EpochLoom** · NASA Space Apps Challenge 2026 · KFUPM الظهران (14 و 15 نوفمبر)
@@ -193,11 +200,9 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 ## 11. الخطوات الجاية
 
 1. Merge فرع `judging-features` على `main` بعد العرض، وبعدها push (`git push loom main && git push origin main`).
-2. (اختياري) centroid لـ SPHEREx في كل فريم كنقاط "SPHEREx centroid" في الـ motion track.
-3. (اختياري) تصدير الـ timelapse WebM.
-4. sigma-clipping لكل باند في الطيف (عشان نقطة D4 الشاذة).
+2. sigma-clipping لكل باند في الطيف (عشان نقطة D4 الشاذة).
 
 ## 12. أفكار ما تنفذت
 
-aperture correction، و error budget كامل، والبحث بالاسم في الخريطة، و centroid لكل فريم SPHEREx، وتصدير WebM.
-(اللي خلص اليوم: Gaia في الخريطة، ورابط WiseView، و proper motion، و difference imaging.)
+aperture correction، و error budget كامل، والبحث بالاسم في الخريطة، والبحث بالاسم.
+(اللي خلص اليوم: Gaia في الخريطة، ورابط WiseView، و proper motion، و difference imaging، و SPHEREx centroids، و WebM.)
