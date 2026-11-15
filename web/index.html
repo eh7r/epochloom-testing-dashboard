@@ -108,6 +108,11 @@ th:first-child,td:first-child{text-align:left}
       <div><label for="ra">RA (deg)</label><input id="ra" type="number" step="any" value="304.69253"></div>
       <div><label for="dec">Dec (deg)</label><input id="dec" type="number" step="any" value="42.45383"></div>
     </div>
+    <div class="row3">
+      <div><label for="pmra" title="proper motion in RA × cos(Dec)">pmRA* mas/yr</label><input id="pmra" type="number" step="any" value="0"></div>
+      <div><label for="pmdec">pmDec mas/yr</label><input id="pmdec" type="number" step="any" value="0"></div>
+      <div><label for="epoch" title="Julian year of the RA/Dec above (Gaia DR3: 2016.0)">Epoch</label><input id="epoch" type="number" step="any" value="2016.0"></div>
+    </div>
     <div class="row2">
       <div><label for="size">Cutout size</label>
         <select id="size"><option value="0.05">0.05° (~29 px)</option><option value="0.1" selected>0.1° (~58 px)</option><option value="0.2">0.2° (~117 px)</option></select></div>
@@ -116,7 +121,7 @@ th:first-child,td:first-child{text-align:left}
     <button id="go" class="primary">Search archive</button>
     <button id="mapgo" style="margin-top:8px;width:100%">Show on sky map only</button>
     <button id="retry" style="margin-top:8px;width:100%">Retry failed frames</button>
-    <div class="hint">Proxima moves ~3.8″ per year, so use the 2026 position, not the catalog (J2000) one.</div>
+    <div class="hint">With a proper motion set, every frame is cut and measured at the target's position propagated to that frame's date (astropy <code>apply_space_motion</code>).</div>
   </div>
 
   <div class="panel">
@@ -172,6 +177,7 @@ th:first-child,td:first-child{text-align:left}
         <button id="play">▶ Play</button>
         <label style="margin:0;display:flex;align-items:center;gap:6px">fps <input id="fps" type="range" min="1" max="8" value="2" style="width:70px"></label>
         <label style="margin:0;display:flex;align-items:center;gap:5px"><input id="ovl" type="checkbox" checked> apertures</label>
+        <label style="margin:0;display:flex;align-items:center;gap:5px" title="One brightness scale for all frames of the band, so real brightness changes stay visible. Off = each frame stretched on its own."><input id="shared" type="checkbox" checked> shared stretch</label>
       </div>
       <div class="viewer">
         <img id="bv" alt="" hidden>
@@ -226,7 +232,7 @@ const $ = (s) => document.querySelector(s);
 const COL = {1:"#8ab4ff",2:"#5eead4",3:"#a3e635",4:"#fbbf24",5:"#fb923c",6:"#f87171"};
 const BANDS = {1:[0.75,1.11],2:[1.11,1.64],3:[1.64,2.42],4:[2.42,3.82],5:[3.82,4.42],6:[4.42,5.0]};
 const state = {obs:[], target:null, bands:new Set([1,2,3,4,5,6]), run:0, idx:0, timer:null,
-               specStop:false, specBusy:false, sel:-1, pts:[]};
+               specStop:false, specBusy:false, sel:-1, pts:[], stretch:{}};
 
 /* ---------- helpers ---------- */
 const bandNum = (bp) => { const m = /D(\d)/.exec(bp||""); return m ? +m[1] : 0; };
@@ -245,7 +251,18 @@ async function pool(items, n, fn, alive){
   const work = async () => { while(k < items.length && alive()){ const it = items[k++]; await fn(it); } };
   await Promise.all(Array.from({length:Math.min(n, items.length)}, work));
 }
-const tparams = () => `ra=${state.target.ra}&dec=${state.target.dec}&size=${state.target.size}`;
+// Per-frame target parameters: with a proper motion the server propagates the position to the frame's MJD.
+const tparams = (o) => { const t = state.target;
+  let q = `ra=${t.ra}&dec=${t.dec}&size=${t.size}`;
+  if((t.pmra || t.pmdec) && isFinite(t.epoch)) q += `&pmra=${t.pmra}&pmdec=${t.pmdec}&epoch=${t.epoch}` + (o ? `&mjd=${o.time}` : "");
+  return q; };
+// Linear proper-motion shift to Julian year jy (only for the archive search position; frames use the server's astropy propagation).
+function shiftTo(t, jy){
+  if(!(t.pmra || t.pmdec) || !isFinite(t.epoch)) return {ra:t.ra, dec:t.dec};
+  const dt = jy - t.epoch, dec = t.dec + t.pmdec / 3.6e6 * dt;
+  return {ra:((t.ra + t.pmra / 3.6e6 * dt / Math.cos(t.dec * Math.PI / 180)) % 360 + 360) % 360, dec};
+}
+const blobOf = (o) => ($("#shared").checked && o.blobShared) ? o.blobShared : o.blob;
 
 /* ---------- server status ---------- */
 fetch(API + "/openapi.json").then(r => { if(!r.ok) throw 0; $("#srv").textContent="server online"; $("#srv").className="pill on"; })
@@ -254,7 +271,9 @@ fetch(API + "/openapi.json").then(r => { if(!r.ok) throw 0; $("#srv").textConten
 /* ---------- target form ---------- */
 $("#preset").onchange = (e) => {
   if(!e.target.value) return;
-  const [ra,dec] = e.target.value.split(","); $("#ra").value = ra; $("#dec").value = dec;
+  // preset value: "ra,dec[,pmra,pmdec,epoch]"
+  const [ra,dec,pmra="0",pmdec="0",epoch="2016.0"] = e.target.value.split(",");
+  $("#ra").value = ra; $("#dec").value = dec; $("#pmra").value = pmra; $("#pmdec").value = pmdec; $("#epoch").value = epoch;
 };
 ["ra","dec"].forEach(id => $("#"+id).addEventListener("input", () => $("#preset").value = ""));
 $("#go").onclick = search;
@@ -329,18 +348,20 @@ $("#slice").oninput = (e) => showSlice(+e.target.value);
 async function search(){
   const ra = +$("#ra").value, dec = +$("#dec").value, size = +$("#size").value, limit = +$("#limit").value;
   if(!(ra>=0 && ra<=360 && dec>=-90 && dec<=90)) return toast("RA must be 0–360 and Dec −90…90.");
-  mapShow(ra, dec, size);
+  const tgt = {ra, dec, size, pmra:+$("#pmra").value || 0, pmdec:+$("#pmdec").value || 0, epoch:+$("#epoch").value};
+  const now = shiftTo(tgt, 2025.9);  // SPHEREx survey epoch: where the archive search and the map look
+  mapShow(now.ra, now.dec, size);
   stopAll();
   const run = ++state.run;
-  state.obs.forEach(o => o.blob && URL.revokeObjectURL(o.blob));
-  state.obs = []; state.pts = []; state.sel = -1;
+  state.obs.forEach(o => { o.blob && URL.revokeObjectURL(o.blob); o.blobShared && URL.revokeObjectURL(o.blobShared); });
+  state.obs = []; state.pts = []; state.sel = -1; state.stretch = {};
   $("#go").disabled = true; $("#go").textContent = "Querying IRSA…";
   let data;
-  try{ data = await getJSON(`${API}/observations?ra=${ra}&dec=${dec}&limit=${limit}`); }
+  try{ data = await getJSON(`${API}/observations?ra=${now.ra.toFixed(6)}&dec=${now.dec.toFixed(6)}&limit=${limit}`); }
   catch(e){ toast("Archive query failed: " + e.message); $("#go").disabled=false; $("#go").textContent="Search archive"; return; }
   $("#go").disabled = false; $("#go").textContent = "Search archive";
   if(run !== state.run) return;
-  state.target = {ra, dec, size};
+  state.target = tgt;
   state.obs = data.map((o,i) => ({...o, i, band:bandNum(o.bandpass), date:mjdDate(o.time), status:"idle", blob:null, phot:null, perr:null}));
   if(!state.obs.length) toast("No SPHEREx images cover this position.");
   buildChips(); buildGrid(); refreshStats(); refreshBlink(true); draw();
@@ -351,22 +372,47 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function loadAll(run){
   for(let pass = 0; pass < 3 && run === state.run; pass++){
     const todo = state.obs.filter(o => o.status !== "ok");
-    if(!todo.length) return;
+    if(!todo.length) break;
     if(pass){ await sleep(4000 * pass); if(run !== state.run) return; }
     await pool(todo, 3, o => loadFrame(o, run), () => run === state.run);
   }
+  if(run === state.run) await sharedStretch(run);
+}
+// One stretch per band: median of the frames' own 1% / 99.5% levels (sky-subtracted MJy/sr),
+// then re-render every frame of the band with it (FITS are cached server-side, so this is quick).
+async function sharedStretch(run){
+  const med = (a) => { a = [...a].sort((x,y) => x-y); const n = a.length; return n % 2 ? a[n>>1] : (a[n/2-1] + a[n/2]) / 2; };
+  const byBand = {};
+  state.obs.filter(o => o.status === "ok" && o.own).forEach(o => (byBand[o.band] ||= []).push(o));
+  for(const b in byBand){ const L = byBand[b];
+    state.stretch[b] = {lo: med(L.map(o => o.own.lo)), hi: med(L.map(o => o.own.hi)), n: L.length}; }
+  const todo = state.obs.filter(o => o.status === "ok" && state.stretch[o.band] && o.sharedWith !== state.stretch[o.band]);
+  await pool(todo, 4, async (o) => {
+    const st = state.stretch[o.band];
+    try{
+      const r = await fetch(`${API}/cutout?url=${encodeURIComponent(o.url)}&${tparams(o)}&lo=${st.lo}&hi=${st.hi}`);
+      if(!r.ok) return;
+      const b = await r.blob(); if(run !== state.run) return;
+      if(o.blobShared) URL.revokeObjectURL(o.blobShared);
+      o.blobShared = URL.createObjectURL(b); o.sharedWith = st; paintCard(o);
+    }catch(e){ /* keep the frame's own stretch */ }
+  }, () => run === state.run);
+  if(run === state.run) showFrame();
 }
 $("#retry").onclick = () => { if(!state.obs.some(o => o.status === "error")) return toast("No failed frames."); loadAll(state.run); };
 
 async function loadFrame(o, run){
   o.status = "loading"; paintCard(o);
   try{
-    const r = await fetch(`${API}/cutout?url=${encodeURIComponent(o.url)}&${tparams()}`);
+    const r = await fetch(`${API}/cutout?url=${encodeURIComponent(o.url)}&${tparams(o)}`);
     if(!r.ok){ let d=""; try{ d=(await r.json()).detail }catch(e){} throw new Error(d || ("HTTP "+r.status)); }
     const b = await r.blob();
     if(run !== state.run) return;
     const hx = (k) => parseFloat(r.headers.get(k));
     o.pos = isFinite(hx("X-Tx")) ? {x:hx("X-Tx"), y:hx("X-Ty"), nx:hx("X-Nx"), ny:hx("X-Ny")} : null;
+    o.own = isFinite(hx("X-Lo")) ? {lo:hx("X-Lo"), hi:hx("X-Hi")} : null;
+    o.at = isFinite(hx("X-Ra")) ? {ra:hx("X-Ra"), dec:hx("X-Dec")} : null;  // position used for this frame (propagated if pm set)
+    if(o.blob) URL.revokeObjectURL(o.blob);
     o.blob = URL.createObjectURL(b); o.status = "ok"; o.err = null;
   }catch(e){ if(run !== state.run) return; o.status = "error"; o.err = String(e.message || e); }
   paintCard(o); refreshBlink(); refreshStats();
@@ -400,7 +446,7 @@ function paintCard(o){
   const c = $("#c"+o.i); if(!c) return;
   const th = c.querySelector(".thumb");
   th.className = "thumb" + (o.status==="loading" ? " loading" : "");
-  if(o.status==="ok"){ th.innerHTML = `<img alt="" src="${o.blob}">`; }
+  if(o.status==="ok"){ th.innerHTML = `<img alt="" src="${blobOf(o)}">`; }
   else if(o.status==="error"){ th.innerHTML = `<div class="st err">${esc(o.err||"failed")}<br>click to retry</div>`; }
   else { th.innerHTML = `<div class="st">${o.status==="loading" ? "loading…" : "queued"}</div>`; }
   c.classList.toggle("sel", state.sel === o.i);
@@ -446,19 +492,24 @@ function showFrame(){
   const fr = frames(), f = fr[state.idx];
   const img = $("#bv"), ov = $("#ov"), tag = $("#btag");
   if(!f){
-    img.hidden = ov.hidden = tag.hidden = true; $("#bempty").hidden = false;
+    img.hidden = tag.hidden = true; ov.toggleAttribute("hidden", true); $("#bempty").hidden = false;
     $("#bempty").textContent = state.obs.length ? "Loading cutouts…" : "Search the archive, then frames appear here.";
     $("#binfo").textContent = ""; return;
   }
   $("#bempty").hidden = true; img.hidden = false; tag.hidden = false;
-  img.src = f.blob; $("#bslide").value = state.idx;
+  img.src = blobOf(f); $("#bslide").value = state.idx;
   tag.textContent = `D${f.band} · ${fmtDate(f.date)}`;
-  $("#binfo").textContent = `frame ${state.idx+1}/${fr.length} · MJD ${f.time.toFixed(4)}` + (f.phot && f.phot.wavelength ? ` · ${f.phot.wavelength.toFixed(3)} µm` : "");
+  const st = state.stretch[f.band], shared = $("#shared").checked && f.blobShared;
+  const t = state.target, pm = t && (t.pmra || t.pmdec);
+  $("#binfo").textContent = `frame ${state.idx+1}/${fr.length} · MJD ${f.time.toFixed(4)}` + (f.phot && f.phot.wavelength ? ` · ${f.phot.wavelength.toFixed(3)} µm` : "") +
+    (shared ? ` · shared stretch (${st.n} frames)` : " · own stretch") +
+    (pm && f.at ? ` · centred on ${f.at.ra.toFixed(5)}, ${f.at.dec.toFixed(5)} (propagated to frame date)` : "");
   drawOverlay(f);
   state.sel = f.i; state.obs.forEach(o => $("#c"+o.i)?.classList.toggle("sel", o.i===f.i));
 }
 function drawOverlay(f){
-  const ov = $("#ov"); ov.hidden = !$("#ovl").checked; if(ov.hidden) return;
+  // <svg> has no .hidden property (HTML elements only), so set the attribute itself.
+  const ov = $("#ov"), on = $("#ovl").checked; ov.toggleAttribute("hidden", !on); if(!on) return;
   const p = f.phot || f.pos, img = $("#bv");
   const nx = p ? p.nx : img.naturalWidth || 58, ny = p ? p.ny : img.naturalHeight || 58;
   const cx = p ? (p.x + .5) / nx * 100 : 50, cy = p ? 100 - (p.y + .5) / ny * 100 : 50;
@@ -468,6 +519,7 @@ function drawOverlay(f){
   ov.innerHTML = ell(rap,"#6ee7ff") + ell(rin,"#ffffff88",true) + ell(rout,"#ffffff88",true);
 }
 $("#ovl").onchange = () => showFrame();
+$("#shared").onchange = () => { state.obs.forEach(paintCard); showFrame(); };
 ["rap","rin","rout"].forEach(id => $("#"+id).addEventListener("change", showFrame));
 $("#bband").onchange = () => { state.idx = 0; refreshBlink(); };
 $("#bslide").oninput = (e) => { state.idx = +e.target.value; showFrame(); };
@@ -505,7 +557,7 @@ async function runSpectrum(){
   upd(); draw();
   await pool(items, 3, async (o) => {
     try{
-      o.phot = await getJSON(`${API}/photometry?url=${encodeURIComponent(o.url)}&${tparams()}&r_ap=${rap}&r_in=${rin}&r_out=${rout}`);
+      o.phot = await getJSON(`${API}/photometry?url=${encodeURIComponent(o.url)}&${tparams(o)}&r_ap=${rap}&r_in=${rin}&r_out=${rout}`);
     }catch(e){ o.perr = String(e.message || e); fail++; }
     done++; upd(); paintCard(o); schedDraw();
   }, () => run === state.run && !state.specStop);

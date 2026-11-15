@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from astrometry import propagate
 from photometry import PhotometryError, measure
 
 conf.remote_timeout = 120
@@ -64,7 +65,8 @@ app.add_middleware(
     allow_origins=["*"],  # read-only public data, no cookies: any page may call the API
     allow_methods=["GET"],
     allow_headers=["*"],
-    expose_headers=["X-Tx", "X-Ty", "X-Nx", "X-Ny"],  # target pixel, read by the dashboard
+    # target pixel, own stretch, propagated position: read by the dashboard
+    expose_headers=["X-Tx", "X-Ty", "X-Nx", "X-Ny", "X-Lo", "X-Hi", "X-Ra", "X-Dec", "X-Flags"],
 )
 
 # Disk cap for cache/ (bytes). Oldest files are deleted first once it is exceeded.
@@ -260,31 +262,71 @@ def get_cutout_fits(url: str, ra: float, dec: float, size: float) -> Path:
     raise HTTPException(502, "no source returned the cutout (" + " | ".join(errors) + ")")
 
 
+def frame_pos(ra, dec, pmra, pmdec, epoch, mjd):
+    """Target position at this frame's time. With pm + epoch + mjd the position is
+    propagated (astropy apply_space_motion); otherwise the given position is used.
+    Rounded to 1e-6 deg (3.6 mas) so cache keys are stable."""
+    if mjd is not None and epoch is not None and (pmra or pmdec):
+        ra, dec = propagate(ra, dec, pmra, pmdec, epoch, mjd=mjd)
+    return round(ra % 360, 6), round(dec, 6)
+
+
+def _sky_sub(path):
+    """IMAGE minus its own median. Zodiacal light is NOT subtracted in SPHEREx L2
+    images and changes with date, so without this a shared stretch would mostly
+    show the zodi level, not the sources."""
+    with fits.open(path) as h:
+        data = h["IMAGE"].data.astype(float)
+    finite = np.isfinite(data)
+    if not finite.any():
+        raise HTTPException(422, "cutout has no valid pixels")
+    return data - np.median(data[finite]), finite
+
+
+def _render_png(img, lo, hi, png):
+    x = np.clip((np.nan_to_num(img, nan=lo) - lo) / (hi - lo + 1e-12), 0, 1)
+    out = np.arcsinh(8 * x) / np.arcsinh(8)  # brings out faint structure
+    # NaN-safe: fixed vmin/vmax and no NaN left (a NaN used to make the PNG blank)
+    plt.imsave(png, out, cmap="gray", vmin=0, vmax=1, origin="lower")
+
+
+def _png_response(path, png, ra, dec, lo, hi):
+    with fits.open(path) as h:  # where the target sits in this frame (for the overlay)
+        ny, nx = h["IMAGE"].data.shape
+        tx, ty = (float(v) for v in WCS(h["IMAGE"].header).world_to_pixel(SkyCoord(ra, dec, unit="deg")))
+    return FileResponse(png, media_type="image/png",
+                        headers={"X-Tx": f"{tx:.3f}", "X-Ty": f"{ty:.3f}", "X-Nx": str(nx), "X-Ny": str(ny),
+                                 "X-Lo": f"{lo:.6g}", "X-Hi": f"{hi:.6g}",
+                                 "X-Ra": f"{ra:.6f}", "X-Dec": f"{dec:.6f}"})
+
+
 @app.get("/cutout")
 def cutout(
     url: str,
     ra: float = Query(..., ge=0, le=360),
     dec: float = Query(..., ge=-90, le=90),
     size: float = Query(0.1, gt=0, le=0.5),
+    pmra: float = Query(0.0, ge=-20000, le=20000, description="mas/yr, includes cos(dec)"),
+    pmdec: float = Query(0.0, ge=-20000, le=20000, description="mas/yr"),
+    epoch: float | None = Query(None, ge=1900, le=2100, description="Julian year of ra/dec"),
+    mjd: float | None = Query(None, ge=40000, le=80000, description="frame time; position is propagated to it"),
+    lo: float | None = Query(None, description="shared stretch low (sky-subtracted MJy/sr)"),
+    hi: float | None = Query(None, description="shared stretch high"),
 ):
+    """PNG of the frame, sky-median subtracted. Without lo/hi the frame gets its own
+    1-99.5 percentile stretch (X-Lo/X-Hi report it); with lo/hi every frame of a band
+    can share one stretch, so brightness changes between dates stay visible."""
+    ra, dec = frame_pos(ra, dec, pmra, pmdec, epoch, mjd)
     path = get_cutout_fits(url, ra, dec, size)
-    png = path.with_suffix(".v2.png")
+    img, finite = _sky_sub(path)
+    if lo is None or hi is None or not hi > lo:
+        lo, hi = (float(v) for v in np.percentile(img[finite], [1, 99.5]))
+        png = path.with_suffix(".v3.png")
+    else:
+        png = path.with_suffix(f".v3_{lo:.5g}_{hi:.5g}.png")
     if not png.exists():
-        with fits.open(path) as h:
-            data = h["IMAGE"].data.astype(float)
-        finite = np.isfinite(data)
-        if not finite.any():
-            raise HTTPException(422, "cutout has no valid pixels")
-        lo, hi = np.percentile(data[finite], [1, 99.5])
-        x = np.clip((np.nan_to_num(data, nan=lo) - lo) / (hi - lo + 1e-12), 0, 1)
-        img = np.arcsinh(8 * x) / np.arcsinh(8)  # brings out faint structure
-        # NaN-safe: fixed vmin/vmax and no NaN left (a NaN used to make the PNG blank)
-        plt.imsave(png, img, cmap="gray", vmin=0, vmax=1, origin="lower")
-    with fits.open(path) as h:  # where the target sits in this frame (for the overlay)
-        ny, nx = h["IMAGE"].data.shape
-        tx, ty = (float(v) for v in WCS(h["IMAGE"].header).world_to_pixel(SkyCoord(ra, dec, unit="deg")))
-    return FileResponse(png, media_type="image/png",
-                        headers={"X-Tx": f"{tx:.3f}", "X-Ty": f"{ty:.3f}", "X-Nx": str(nx), "X-Ny": str(ny)})
+        _render_png(img, lo, hi, png)
+    return _png_response(path, png, ra, dec, lo, hi)
 
 
 # --------------------------------------------------------------------------
@@ -299,9 +341,14 @@ def photometry(
     r_ap: float = Query(2.0, gt=0.5, le=8),
     r_in: float = Query(3.5, gt=1, le=12),
     r_out: float = Query(6.0, gt=2, le=15),
+    pmra: float = Query(0.0, ge=-20000, le=20000),
+    pmdec: float = Query(0.0, ge=-20000, le=20000),
+    epoch: float | None = Query(None, ge=1900, le=2100),
+    mjd: float | None = Query(None, ge=40000, le=80000),
 ):
     if not (r_ap < r_in < r_out):
         raise HTTPException(422, "need r_ap < r_in < r_out")
+    ra, dec = frame_pos(ra, dec, pmra, pmdec, epoch, mjd)
     path = get_cutout_fits(url, ra, dec, size)
     try:
         return measure(path, ra, dec, r_ap, r_in, r_out)
